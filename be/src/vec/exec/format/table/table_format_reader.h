@@ -17,8 +17,7 @@
 
 #pragma once
 
-#include <stddef.h>
-
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -29,7 +28,6 @@
 
 namespace doris {
 class TFileRangeDesc;
-
 namespace vectorized {
 class Block;
 } // namespace vectorized
@@ -37,10 +35,11 @@ struct TypeDescriptor;
 } // namespace doris
 
 namespace doris::vectorized {
-
+#include "common/compile_check_begin.h"
 class TableFormatReader : public GenericReader {
 public:
-    TableFormatReader(std::unique_ptr<GenericReader> file_format_reader);
+    TableFormatReader(std::unique_ptr<GenericReader> file_format_reader)
+            : _file_format_reader(std::move(file_format_reader)) {}
     ~TableFormatReader() override = default;
     Status get_next_block(Block* block, size_t* read_rows, bool* eof) override {
         return _file_format_reader->get_next_block(block, read_rows, eof);
@@ -55,11 +54,25 @@ public:
         return _file_format_reader->get_parsed_schema(col_names, col_types);
     }
 
-    virtual Status init_row_filters(const TFileRangeDesc& range) = 0;
+    Status set_fill_columns(
+            const std::unordered_map<std::string, std::tuple<std::string, const SlotDescriptor*>>&
+                    partition_columns,
+            const std::unordered_map<std::string, VExprContextSPtr>& missing_columns) override {
+        return _file_format_reader->set_fill_columns(partition_columns, missing_columns);
+    }
+
+    bool fill_all_columns() const override { return _file_format_reader->fill_all_columns(); }
+
+    virtual Status init_row_filters(const TFileRangeDesc& range, io::IOContext* io_ctx) = 0;
 
 protected:
     std::string _table_format;                          // hudi, iceberg
     std::unique_ptr<GenericReader> _file_format_reader; // parquet, orc
+    void _collect_profile_before_close() override {
+        if (_file_format_reader != nullptr) {
+            _file_format_reader->collect_profile_before_close();
+        }
+    }
 };
-
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

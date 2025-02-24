@@ -18,8 +18,12 @@
 package org.apache.doris.tablefunction;
 
 import org.apache.doris.catalog.Column;
+import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.ScalarType;
+import org.apache.doris.common.ErrorCode;
+import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.nereids.exceptions.AnalysisException;
+import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.thrift.TFrontendsMetadataParams;
 import org.apache.doris.thrift.TMetaScanRange;
 import org.apache.doris.thrift.TMetadataType;
@@ -44,12 +48,14 @@ public class FrontendsTableValuedFunction extends MetadataTableValuedFunction {
             new Column("HttpPort", ScalarType.createStringType()),
             new Column("QueryPort", ScalarType.createStringType()),
             new Column("RpcPort", ScalarType.createStringType()),
+            new Column("ArrowFlightSqlPort", ScalarType.createStringType()),
             new Column("Role", ScalarType.createStringType()),
             new Column("IsMaster", ScalarType.createStringType()),
             new Column("ClusterId", ScalarType.createStringType()),
             new Column("Join", ScalarType.createStringType()),
             new Column("Alive", ScalarType.createStringType()),
             new Column("ReplayedJournalId", ScalarType.createStringType()),
+            new Column("LastStartTime", ScalarType.createStringType()),
             new Column("LastHeartbeat", ScalarType.createStringType()),
             new Column("IsHelper", ScalarType.createStringType()),
             new Column("ErrMsg", ScalarType.createStringType()),
@@ -73,6 +79,12 @@ public class FrontendsTableValuedFunction extends MetadataTableValuedFunction {
     public FrontendsTableValuedFunction(Map<String, String> params) throws AnalysisException {
         if (params.size() != 0) {
             throw new AnalysisException("frontends table-valued-function does not support any params");
+        }
+        if (!Env.getCurrentEnv().getAccessManager()
+                .checkGlobalPriv(ConnectContext.get(), PrivPredicate.ADMIN_OR_NODE)) {
+            String message = ErrorCode.ERR_SPECIFIC_ACCESS_DENIED_ERROR.formatErrorMsg(
+                    PrivPredicate.ADMIN_OR_NODE.getPrivs().toString());
+            throw new AnalysisException(message);
         }
     }
 
@@ -101,4 +113,3 @@ public class FrontendsTableValuedFunction extends MetadataTableValuedFunction {
         return SCHEMA;
     }
 }
-

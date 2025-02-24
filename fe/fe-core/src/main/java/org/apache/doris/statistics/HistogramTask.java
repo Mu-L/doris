@@ -18,11 +18,11 @@
 package org.apache.doris.statistics;
 
 import org.apache.doris.catalog.Env;
+import org.apache.doris.common.DdlException;
 import org.apache.doris.common.FeConstants;
 import org.apache.doris.statistics.AnalysisInfo.AnalysisMethod;
 import org.apache.doris.statistics.util.StatisticsUtil;
 
-import com.google.common.annotations.VisibleForTesting;
 import org.apache.commons.text.StringSubstitutor;
 
 import java.util.HashMap;
@@ -46,12 +46,7 @@ public class HistogramTask extends BaseAnalysisTask {
             + "    HISTOGRAM(`${colName}`, ${maxBucketNum}) AS buckets, "
             + "    NOW() AS create_time "
             + "FROM "
-            + "    `${dbName}`.`${tblName}` ${sampleExpr}";
-
-    @VisibleForTesting
-    public HistogramTask() {
-        super();
-    }
+            + "    `${dbName}`.`${tblName}`";
 
     public HistogramTask(AnalysisInfo info) {
         super(info);
@@ -67,21 +62,24 @@ public class HistogramTask extends BaseAnalysisTask {
         params.put("tblId", String.valueOf(tbl.getId()));
         params.put("idxId", String.valueOf(info.indexId));
         params.put("colId", String.valueOf(info.colName));
-        params.put("dbName", info.dbName);
-        params.put("tblName", String.valueOf(info.tblName));
+        params.put("dbName", db.getFullName());
+        params.put("tblName", tbl.getName());
         params.put("colName", String.valueOf(info.colName));
         params.put("sampleRate", getSampleRateFunction());
-        params.put("sampleExpr", getSampleExpression());
         params.put("maxBucketNum", String.valueOf(info.maxBucketNum));
 
         StringSubstitutor stringSubstitutor = new StringSubstitutor(params);
         StatisticsUtil.execUpdate(stringSubstitutor.replace(ANALYZE_HISTOGRAM_SQL_TEMPLATE_TABLE));
-        Env.getCurrentEnv().getStatisticsCache().refreshHistogramSync(tbl.getId(), -1, col.getName());
+        Env.getCurrentEnv().getStatisticsCache().refreshHistogramSync(
+                tbl.getDatabase().getCatalog().getId(), tbl.getDatabase().getId(), tbl.getId(), -1, col.getName());
     }
 
     @Override
-    protected void afterExecution() {
-        // DO NOTHING
+    protected void doSample() {
+    }
+
+    @Override
+    protected void deleteNotExistPartitionStats(AnalysisInfo jobInfo) throws DdlException {
     }
 
     private String getSampleRateFunction() {

@@ -21,6 +21,7 @@
 #include "vec/core/types.h"
 
 namespace doris::vectorized {
+#include "common/compile_check_begin.h"
 
 struct DecimalScaleParams {
     enum ScaleType {
@@ -30,18 +31,23 @@ struct DecimalScaleParams {
         SCALE_DOWN,
     };
     ScaleType scale_type = ScaleType::NOT_INIT;
-    int32_t scale_factor = 1;
+    int64_t scale_factor = 1;
 
     template <typename DecimalPrimitiveType>
-    static inline constexpr DecimalPrimitiveType get_scale_factor(int32_t n) {
-        if constexpr (std::is_same_v<DecimalPrimitiveType, Int32>) {
+    static inline constexpr DecimalPrimitiveType::NativeType get_scale_factor(int32_t n) {
+        if constexpr (std::is_same_v<DecimalPrimitiveType, Decimal32>) {
             return common::exp10_i32(n);
-        } else if constexpr (std::is_same_v<DecimalPrimitiveType, Int64>) {
+        } else if constexpr (std::is_same_v<DecimalPrimitiveType, Decimal64>) {
             return common::exp10_i64(n);
-        } else if constexpr (std::is_same_v<DecimalPrimitiveType, Int128>) {
+        } else if constexpr (std::is_same_v<DecimalPrimitiveType, Decimal128V2>) {
             return common::exp10_i128(n);
+        } else if constexpr (std::is_same_v<DecimalPrimitiveType, Decimal128V3>) {
+            return common::exp10_i128(n);
+        } else if constexpr (std::is_same_v<DecimalPrimitiveType, Decimal256>) {
+            return common::exp10_i256(n);
         } else {
-            return DecimalPrimitiveType(1);
+            static_assert(!sizeof(DecimalPrimitiveType),
+                          "All types must be matched with if constexpr.");
         }
     }
 };
@@ -128,12 +134,13 @@ public:
     }
 
 private:
-    uint32_t _get_idx(const std::string& key) {
+    uint32_t _get_idx(const std::string& key) const {
         return (uint32_t)std::hash<std::string>()(key) % _num_shards;
     }
 
     uint32_t _num_shards;
-    KVCache<std::string>** _shards;
+    KVCache<std::string>** _shards = nullptr;
 };
 
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

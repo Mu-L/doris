@@ -50,6 +50,79 @@ CREATE TABLE doris_test.type
 ENGINE = MergeTree
 ORDER BY k1;
 
+CREATE TABLE doris_test.type_null
+(
+    `id`  String,
+    `k1`  Nullable(Bool),
+    `k2`  Nullable(Date),
+    `k3`  Nullable(Date32),
+    `k4`  Nullable(Datetime),
+    `k5`  Nullable(Datetime64),
+    `k6`  Nullable(Float32),
+    `k7`  Nullable(Float64),
+    `k8`  Nullable(Int8),
+    `k9`  Nullable(Int16),
+    `k10` Nullable(Int32),
+    `k11` Nullable(Int64),
+    `k12` Nullable(Int128),
+    `k13` Nullable(Int256),
+    `k14` Nullable(UInt8),
+    `k15` Nullable(UInt16),
+    `k16` Nullable(UInt32),
+    `k17` Nullable(UInt64),
+    `k18` Nullable(UInt128),
+    `k19` Nullable(UInt256),
+    `k20` Nullable(Decimal(9,2)),
+    `k21` Nullable(Decimal(18,2)),
+    `k22` Nullable(Decimal(38,2)),
+    `k23` Nullable(Decimal(76,2)),
+    `k24` Nullable(Enum('hello' = 1, 'world' = 2)),
+    `k25` Nullable(IPv4),
+    `k26` Nullable(IPv6),
+    `k27` Nullable(UUID),
+    `k28` Nullable(String),
+    `k29` Nullable(FixedString(2))
+)
+ENGINE = MergeTree
+ORDER BY id;
+
+CREATE TABLE doris_test.type_ins
+(
+    `id`  String,
+    `k1`  Nullable(Bool),
+    `k2`  Nullable(Date),
+    `k3`  Nullable(Date32),
+    `k4`  Nullable(Datetime),
+    `k5`  Nullable(Datetime64),
+    `k6`  Nullable(Float32),
+    `k7`  Nullable(Float64),
+    `k8`  Nullable(Int8),
+    `k9`  Nullable(Int16),
+    `k10` Nullable(Int32),
+    `k11` Nullable(Int64),
+    `k12` Nullable(Int128),
+    `k13` Nullable(Int256),
+    `k14` Nullable(UInt8),
+    `k15` Nullable(UInt16),
+    `k16` Nullable(UInt32),
+    `k17` Nullable(UInt64),
+    `k18` Nullable(UInt128),
+    `k19` Nullable(UInt256),
+    `k20` Nullable(Decimal(9,2)),
+    `k21` Nullable(Decimal(18,2)),
+    `k22` Nullable(Decimal(38,2)),
+    `k23` Nullable(Decimal(76,2)),
+    `k24` Nullable(Enum('hello' = 1, 'world' = 2)),
+    `k25` Nullable(IPv4),
+    `k26` Nullable(IPv6),
+    `k27` Nullable(UUID),
+    `k28` Nullable(String),
+    `k29` Nullable(FixedString(2))
+)
+ENGINE = MergeTree
+ORDER BY id;
+
+
 CREATE TABLE doris_test.number
 (
     `k6`  Float32,
@@ -115,6 +188,74 @@ CREATE TABLE doris_test.arr
 ENGINE = MergeTree
 ORDER BY id;
 
+CREATE TABLE doris_test.arr_null
+(
+    `id`   String,
+    `arr1` Array(Nullable(Bool)),
+    `arr2` Array(Nullable(Date)),
+    `arr3` Array(Nullable(Date32)),
+    `arr4` Array(Nullable(Float32)),
+    `arr5` Array(Nullable(Float64)),
+    `arr6` Array(Nullable(Int8)),
+    `arr7` Array(Nullable(Int16)),
+    `arr8` Array(Nullable(Int32)),
+    `arr9` Array(Nullable(Int64)),
+    `arr10` Array(Nullable(Int128)),
+    `arr11` Array(Nullable(Int256)),
+    `arr12` Array(Nullable(UInt8)),
+    `arr13` Array(Nullable(UInt16)),
+    `arr14` Array(Nullable(UInt32)),
+    `arr15` Array(Nullable(UInt64)),
+    `arr16` Array(Nullable(UInt128)),
+    `arr17` Array(Nullable(UInt256)),
+    `arr18` Array(Nullable(Decimal(9,2))),
+    `arr19` Array(Nullable(Enum('hello' = 1, 'world' = 2))),
+    `arr20` Array(Nullable(IPv4)),
+    `arr21` Array(Nullable(IPv6)),
+    `arr22` Array(Nullable(UUID)),
+    `arr23` Array(Nullable(Int8)),
+    `arr24` Array(Nullable(String)),
+    `arr25` Array(LowCardinality(String)),
+    `arr26` Array(Nullable(Datetime)),
+    `arr27` Array(Nullable(Datetime64))
+)
+ENGINE = MergeTree
+ORDER BY id;
+
+CREATE TABLE doris_test.arr_ins
+(
+    `id`   String,
+    `arr1` Array(Nullable(Bool)),
+    `arr2` Array(Nullable(Date)),
+    `arr3` Array(Nullable(Date32)),
+    `arr4` Array(Nullable(Float32)),
+    `arr5` Array(Nullable(Float64)),
+    `arr6` Array(Nullable(Int8)),
+    `arr7` Array(Nullable(Int16)),
+    `arr8` Array(Nullable(Int32)),
+    `arr9` Array(Nullable(Int64)),
+    `arr10` Array(Nullable(Int128)),
+    `arr11` Array(Nullable(Int256)),
+    `arr12` Array(Nullable(UInt8)),
+    `arr13` Array(Nullable(UInt16)),
+    `arr14` Array(Nullable(UInt32)),
+    `arr15` Array(Nullable(UInt64)),
+    `arr16` Array(Nullable(UInt128)),
+    `arr17` Array(Nullable(UInt256)),
+    `arr18` Array(Nullable(Decimal(9,2))),
+    `arr19` Array(Nullable(Enum('hello' = 1, 'world' = 2))),
+    `arr20` Array(Nullable(IPv4)),
+    `arr21` Array(Nullable(IPv6)),
+    `arr22` Array(Nullable(UUID)),
+    `arr23` Array(Nullable(Int8)),
+    `arr24` Array(Nullable(String)),
+    `arr25` Array(LowCardinality(String)),
+    `arr26` Array(Nullable(Datetime)),
+    `arr27` Array(Nullable(Datetime64))
+)
+ENGINE = MergeTree
+ORDER BY id;
+
 set allow_experimental_object_type = 1;
 CREATE TABLE doris_test.json
 (
@@ -131,3 +272,124 @@ CREATE TABLE doris_test.final_test
 )
     ENGINE = ReplacingMergeTree
 ORDER BY key;
+
+CREATE TABLE doris_test.ts
+(
+    id Int64,
+    ts Int64
+)
+ENGINE = MergeTree
+ORDER BY id;
+
+CREATE TABLE doris_test.dt_with_tz
+(
+    id Int64,
+    dt1 DateTime('Asia/Shanghai'),
+    dt2 DateTime64(6, 'Asia/Shanghai')
+)
+ENGINE = MergeTree
+ORDER BY id;
+
+CREATE TABLE doris_test.extreme_test
+(
+    id UInt64,
+    -- Integer types (signed and unsigned) and their Nullable versions
+    int8_col         Int8,
+    int8_nullable    Nullable(Int8),
+    int16_col        Int16,
+    int16_nullable   Nullable(Int16),
+    int32_col        Int32,
+    int32_nullable   Nullable(Int32),
+    int64_col        Int64,
+    int64_nullable   Nullable(Int64),
+    uint8_col        UInt8,
+    uint8_nullable   Nullable(UInt8),
+    uint16_col       UInt16,
+    uint16_nullable  Nullable(UInt16),
+    uint32_col       UInt32,
+    uint32_nullable  Nullable(UInt32),
+    uint64_col       UInt64,
+    uint64_nullable  Nullable(UInt64),
+    -- Floating point types
+    float32_col      Float32,
+    float32_nullable Nullable(Float32),
+    float64_col      Float64,
+    float64_nullable Nullable(Float64),
+    -- Decimal type (defined here with precision 18 and scale 2)
+    decimal_col      Decimal(18,2),
+    decimal_nullable Nullable(Decimal(18,2)),
+    -- Date and DateTime types
+    date_col         Date,
+    date_nullable    Nullable(Date),
+    datetime_col     DateTime,
+    datetime_nullable Nullable(DateTime),
+    -- String types
+    string_col         String,
+    string_nullable    Nullable(String),
+    fixedstring_col    FixedString(10),
+    fixedstring_nullable Nullable(FixedString(10)),
+    -- Enum type (Enum8 valid range is -128 to 127; here three enum values are defined)
+    enum_col         Enum8('A' = 1, 'B' = 2, 'C' = 3),
+    enum_nullable    Nullable(Enum8('A' = 1, 'B' = 2, 'C' = 3)),
+    -- UUID type
+    uuid_col         UUID,
+    uuid_nullable    Nullable(UUID),
+    -- IP address types
+    ipv4_col         IPv4,
+    ipv4_nullable    Nullable(IPv4),
+    ipv6_col         IPv6,
+    ipv6_nullable    Nullable(IPv6)
+) ENGINE = MergeTree()
+ORDER BY id;
+
+CREATE TABLE doris_test.extreme_test_multi_block
+(
+    id UInt64,
+    -- Integer types (signed and unsigned) and their Nullable versions
+    int8_col         Int8,
+    int8_nullable    Nullable(Int8),
+    int16_col        Int16,
+    int16_nullable   Nullable(Int16),
+    int32_col        Int32,
+    int32_nullable   Nullable(Int32),
+    int64_col        Int64,
+    int64_nullable   Nullable(Int64),
+    uint8_col        UInt8,
+    uint8_nullable   Nullable(UInt8),
+    uint16_col       UInt16,
+    uint16_nullable  Nullable(UInt16),
+    uint32_col       UInt32,
+    uint32_nullable  Nullable(UInt32),
+    uint64_col       UInt64,
+    uint64_nullable  Nullable(UInt64),
+    -- Floating point types
+    float32_col      Float32,
+    float32_nullable Nullable(Float32),
+    float64_col      Float64,
+    float64_nullable Nullable(Float64),
+    -- Decimal type (defined here with precision 18 and scale 2)
+    decimal_col      Decimal(18,2),
+    decimal_nullable Nullable(Decimal(18,2)),
+    -- Date and DateTime types
+    date_col         Date,
+    date_nullable    Nullable(Date),
+    datetime_col     DateTime,
+    datetime_nullable Nullable(DateTime),
+    -- String types
+    string_col         String,
+    string_nullable    Nullable(String),
+    fixedstring_col    FixedString(10),
+    fixedstring_nullable Nullable(FixedString(10)),
+    -- Enum type (Enum8 valid range is -128 to 127; here three enum values are defined)
+    enum_col         Enum8('A' = 1, 'B' = 2, 'C' = 3),
+    enum_nullable    Nullable(Enum8('A' = 1, 'B' = 2, 'C' = 3)),
+    -- UUID type
+    uuid_col         UUID,
+    uuid_nullable    Nullable(UUID),
+    -- IP address types
+    ipv4_col         IPv4,
+    ipv4_nullable    Nullable(IPv4),
+    ipv6_col         IPv6,
+    ipv6_nullable    Nullable(IPv6)
+) ENGINE = MergeTree()
+ORDER BY id;

@@ -18,40 +18,47 @@
 package org.apache.doris.load;
 
 import org.apache.doris.analysis.OutFileClause;
-import org.apache.doris.analysis.SelectStmt;
+import org.apache.doris.analysis.StatementBase;
 import org.apache.doris.catalog.Database;
 import org.apache.doris.catalog.Env;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.Partition;
 import org.apache.doris.catalog.TabletMeta;
 import org.apache.doris.common.AnalysisException;
+import org.apache.doris.common.Status;
 import org.apache.doris.load.ExportFailMsg.CancelType;
+import org.apache.doris.nereids.analyzer.UnboundRelation;
+import org.apache.doris.nereids.glue.LogicalPlanAdapter;
+import org.apache.doris.nereids.trees.plans.logical.LogicalPlan;
 import org.apache.doris.qe.AutoCloseConnectContext;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.QueryState.MysqlStateType;
 import org.apache.doris.qe.StmtExecutor;
+import org.apache.doris.qe.VariableMgr;
 import org.apache.doris.scheduler.exception.JobException;
 import org.apache.doris.scheduler.executor.TransientTaskExecutor;
-import org.apache.doris.system.SystemInfoService;
+import org.apache.doris.thrift.TStatusCode;
 import org.apache.doris.thrift.TUniqueId;
 
 import com.google.common.collect.Lists;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 public class ExportTaskExecutor implements TransientTaskExecutor {
+    private static final Logger LOG = LogManager.getLogger(ExportTaskExecutor.class);
 
-    List<SelectStmt> selectStmtLists;
+    List<StatementBase> selectStmtLists;
 
     ExportJob exportJob;
 
-    @Setter
     Long taskId;
 
     private StmtExecutor stmtExecutor;
@@ -60,7 +67,8 @@ public class ExportTaskExecutor implements TransientTaskExecutor {
 
     private AtomicBoolean isFinished;
 
-    ExportTaskExecutor(List<SelectStmt> selectStmtLists, ExportJob exportJob) {
+    ExportTaskExecutor(List<StatementBase> selectStmtLists, ExportJob exportJob) {
+        this.taskId = UUID.randomUUID().getMostSignificantBits();
         this.selectStmtLists = selectStmtLists;
         this.exportJob = exportJob;
         this.isCanceled = new AtomicBoolean(false);
@@ -68,70 +76,114 @@ public class ExportTaskExecutor implements TransientTaskExecutor {
     }
 
     @Override
+    public Long getId() {
+        return taskId;
+    }
+
+    @Override
     public void execute() throws JobException {
+        LOG.debug("[Export Task] taskId: {} starting execution", taskId);
         if (isCanceled.get()) {
+            LOG.debug("[Export Task] taskId: {} was already canceled before execution", taskId);
             throw new JobException("Export executor has been canceled, task id: {}", taskId);
         }
+        LOG.debug("[Export Task] taskId: {} updating state to EXPORTING", taskId);
         exportJob.updateExportJobState(ExportJobState.EXPORTING, taskId, null, null, null);
         List<OutfileInfo> outfileInfoList = Lists.newArrayList();
         for (int idx = 0; idx < selectStmtLists.size(); ++idx) {
+            LOG.debug("[Export Task] taskId: {} processing statement {}/{}",
+                    taskId, idx + 1, selectStmtLists.size());
             if (isCanceled.get()) {
+                LOG.debug("[Export Task] taskId: {} canceled during execution at statement {}", taskId, idx + 1);
                 throw new JobException("Export executor has been canceled, task id: {}", taskId);
             }
-            // check the version of tablets
-            try {
-                Database db = Env.getCurrentEnv().getInternalCatalog().getDbOrAnalysisException(
-                        exportJob.getTableName().getDb());
-                OlapTable table = db.getOlapTableOrAnalysisException(exportJob.getTableName().getTbl());
-                table.readLock();
+            // check the version of tablets, skip if the consistency is in partition level.
+            if (exportJob.getExportTable().isManagedTable() && !exportJob.isPartitionConsistency()) {
+                LOG.debug("[Export Task] taskId: {} checking tablet versions for statement {}", taskId, idx + 1);
                 try {
-                    SelectStmt selectStmt = selectStmtLists.get(idx);
-                    List<Long> tabletIds = selectStmt.getTableRefs().get(0).getSampleTabletIds();
-                    for (Long tabletId : tabletIds) {
-                        TabletMeta tabletMeta = Env.getCurrentEnv().getTabletInvertedIndex().getTabletMeta(
-                                tabletId);
-                        Partition partition = table.getPartition(tabletMeta.getPartitionId());
-                        long nowVersion = partition.getVisibleVersion();
-                        long oldVersion = exportJob.getPartitionToVersion().get(partition.getName());
-                        if (nowVersion != oldVersion) {
-                            exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
-                                    CancelType.RUN_FAIL, "The version of tablet {" + tabletId + "} has changed");
-                            throw new JobException("Export Job[{}]: Tablet {} has changed version, old version = {}, "
-                                    + "now version = {}", exportJob.getId(), tabletId, oldVersion, nowVersion);
+                    Database db = Env.getCurrentEnv().getInternalCatalog().getDbOrAnalysisException(
+                            exportJob.getTableName().getDb());
+                    OlapTable table = db.getOlapTableOrAnalysisException(exportJob.getTableName().getTbl());
+                    LOG.debug("[Export Lock] taskId: {}, table: {} about to acquire readLock",
+                            taskId, table.getName());
+                    table.readLock();
+                    LOG.debug("[Export Lock] taskId: {}, table: {} acquired readLock", taskId, table.getName());
+                    try {
+                        List<Long> tabletIds;
+                        LogicalPlanAdapter logicalPlanAdapter = (LogicalPlanAdapter) selectStmtLists.get(idx);
+                        Optional<UnboundRelation> unboundRelation = findUnboundRelation(
+                                logicalPlanAdapter.getLogicalPlan());
+                        tabletIds = unboundRelation.get().getTabletIds();
+
+                        for (Long tabletId : tabletIds) {
+                            TabletMeta tabletMeta = Env.getCurrentEnv().getTabletInvertedIndex().getTabletMeta(
+                                    tabletId);
+                            Partition partition = table.getPartition(tabletMeta.getPartitionId());
+                            long nowVersion = partition.getVisibleVersion();
+                            long oldVersion = exportJob.getPartitionToVersion().get(partition.getName());
+                            if (nowVersion != oldVersion) {
+                                LOG.debug("[Export Lock] taskId: {}, table: {} about to release readLock"
+                                        + "due to version mismatch", taskId, table.getName());
+                                exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
+                                        CancelType.RUN_FAIL, "The version of tablet {" + tabletId + "} has changed");
+                                throw new JobException("Export Job[{}]: Tablet {} has changed version, old version = {}"
+                                        + ", now version = {}", exportJob.getId(), tabletId, oldVersion, nowVersion);
+                            }
                         }
+                    } catch (Exception e) {
+                        LOG.debug("[Export Lock] taskId: {}, table: {} about to release readLock"
+                                + "due to exception: {}", taskId, table.getName(), e.getMessage());
+                        exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
+                                ExportFailMsg.CancelType.RUN_FAIL, e.getMessage());
+                        throw new JobException(e);
+                    } finally {
+                        LOG.debug("[Export Lock] taskId: {}, table: {} releasing readLock in finally block",
+                                taskId, table.getName());
+                        table.readUnlock();
+                        LOG.debug("[Export Lock] taskId: {}, table: {} released readLock successfully",
+                                taskId, table.getName());
                     }
-                } finally {
-                    table.readUnlock();
+                } catch (AnalysisException e) {
+                    exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
+                            ExportFailMsg.CancelType.RUN_FAIL, e.getMessage());
+                    throw new JobException(e);
                 }
-            } catch (AnalysisException e) {
-                exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
-                        ExportFailMsg.CancelType.RUN_FAIL, e.getMessage());
-                throw new JobException(e);
             }
 
             try (AutoCloseConnectContext r = buildConnectContext()) {
+                LOG.debug("[Export Task] taskId: {} executing statement {}", taskId, idx + 1);
                 stmtExecutor = new StmtExecutor(r.connectContext, selectStmtLists.get(idx));
                 stmtExecutor.execute();
                 if (r.connectContext.getState().getStateType() == MysqlStateType.ERR) {
+                    LOG.debug("[Export Task] taskId: {} failed with MySQL error: {}", taskId,
+                            r.connectContext.getState().getErrorMessage());
                     exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
                             ExportFailMsg.CancelType.RUN_FAIL, r.connectContext.getState().getErrorMessage());
                     return;
                 }
+                LOG.debug("[Export Task] taskId: {} statement {} executed successfully", taskId, idx + 1);
                 OutfileInfo outfileInfo = getOutFileInfo(r.connectContext.getResultAttachedInfo());
+                LOG.debug("[Export Task] taskId: {} got outfile info for statement {}:"
+                                + "fileNumber={}, totalRows={}, fileSize={}",
+                        taskId, idx + 1, outfileInfo.getFileNumber(),
+                        outfileInfo.getTotalRows(), outfileInfo.getFileSize());
                 outfileInfoList.add(outfileInfo);
             } catch (Exception e) {
+                LOG.debug("[Export Task] taskId: {} failed with exception during statement {}: {}",
+                        taskId, idx + 1, e.getMessage(), e);
                 exportJob.updateExportJobState(ExportJobState.CANCELLED, taskId, null,
                         ExportFailMsg.CancelType.RUN_FAIL, e.getMessage());
                 throw new JobException(e);
-            } finally {
-                stmtExecutor.addProfileToSpan();
             }
         }
         if (isCanceled.get()) {
+            LOG.debug("[Export Task] taskId: {} canceled after processing all statements", taskId);
             throw new JobException("Export executor has been canceled, task id: {}", taskId);
         }
+        LOG.debug("[Export Task] taskId: {} completed successfully, updating state to FINISHED", taskId);
         exportJob.updateExportJobState(ExportJobState.FINISHED, taskId, outfileInfoList, null, null);
         isFinished.getAndSet(true);
+        LOG.debug("[Export Task] taskId: {} execution completed", taskId);
     }
 
     @Override
@@ -141,13 +193,16 @@ public class ExportTaskExecutor implements TransientTaskExecutor {
         }
         isCanceled.getAndSet(true);
         if (stmtExecutor != null) {
-            stmtExecutor.cancel();
+            stmtExecutor.cancel(new Status(TStatusCode.CANCELLED, "export task cancelled"));
         }
     }
 
     private AutoCloseConnectContext buildConnectContext() {
         ConnectContext connectContext = new ConnectContext();
-        connectContext.setSessionVariable(exportJob.getSessionVariables());
+        exportJob.getSessionVariables().setQueryTimeoutS(exportJob.getTimeoutSecond());
+        connectContext.setSessionVariable(VariableMgr.cloneSessionVariable(exportJob.getSessionVariables()));
+        // The rollback to the old optimizer is prohibited
+        // Since originStmt is empty, reverting to the old optimizer when the new optimizer is enabled is meaningless.
         connectContext.setEnv(Env.getCurrentEnv());
         connectContext.setDatabase(exportJob.getTableName().getDb());
         connectContext.setQualifiedUser(exportJob.getQualifiedUser());
@@ -156,7 +211,6 @@ public class ExportTaskExecutor implements TransientTaskExecutor {
         TUniqueId queryId = new TUniqueId(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits());
         connectContext.setQueryId(queryId);
         connectContext.setStartTime();
-        connectContext.setCluster(SystemInfoService.DEFAULT_CLUSTER);
         return new AutoCloseConnectContext(connectContext);
     }
 
@@ -164,8 +218,25 @@ public class ExportTaskExecutor implements TransientTaskExecutor {
         OutfileInfo outfileInfo = new OutfileInfo();
         outfileInfo.setFileNumber(resultAttachedInfo.get(OutFileClause.FILE_NUMBER));
         outfileInfo.setTotalRows(resultAttachedInfo.get(OutFileClause.TOTAL_ROWS));
-        outfileInfo.setFileSize(resultAttachedInfo.get(OutFileClause.FILE_SIZE) + "bytes");
+        outfileInfo.setFileSize(resultAttachedInfo.get(OutFileClause.FILE_SIZE));
         outfileInfo.setUrl(resultAttachedInfo.get(OutFileClause.URL));
         return outfileInfo;
+    }
+
+    private Optional<UnboundRelation> findUnboundRelation(LogicalPlan plan) {
+        if (plan instanceof UnboundRelation) {
+            return Optional.of((UnboundRelation) plan);
+        }
+        for (int i = 0; i < plan.children().size(); ++i) {
+            Optional<UnboundRelation> optional = findUnboundRelation((LogicalPlan) plan.children().get(i));
+            if (optional.isPresent()) {
+                return optional;
+            }
+        }
+        return Optional.empty();
+    }
+
+    public void setTaskId(Long taskId) {
+        this.taskId = taskId;
     }
 }

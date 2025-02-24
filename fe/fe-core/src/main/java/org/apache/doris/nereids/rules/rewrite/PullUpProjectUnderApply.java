@@ -26,15 +26,17 @@ import org.apache.doris.nereids.trees.plans.logical.LogicalApply;
 import org.apache.doris.nereids.trees.plans.logical.LogicalFilter;
 import org.apache.doris.nereids.trees.plans.logical.LogicalProject;
 
+import com.google.common.base.Preconditions;
+
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Adjust the order of Project and apply in correlated subqueries.
- *
+ * <pre>
  * before:
  *              apply
- *         /              \
+ *             /     \
  * Input(output:b)    Project(output:a)
  *                         |
  *                       child
@@ -43,8 +45,9 @@ import java.util.List;
  *          Project(b,(if the Subquery is Scalar add 'a' as the output column))
  *                  |
  *                apply
- *          /               \
- * Input(output:b)          child
+ *               /     \
+ * Input(output:b)      child
+ * </pre>
  */
 public class PullUpProjectUnderApply extends OneRewriteRuleFactory {
     @Override
@@ -55,14 +58,19 @@ public class PullUpProjectUnderApply extends OneRewriteRuleFactory {
                 .whenNot(LogicalApply::alreadyExecutedEliminateFilter)
                 .then(apply -> {
                     LogicalProject<Plan> project = apply.right();
-                    LogicalApply newCorrelate = new LogicalApply<>(apply.getCorrelationSlot(), apply.getSubqueryExpr(),
-                                apply.getCorrelationFilter(), apply.getMarkJoinSlotReference(),
-                                apply.isNeedAddSubOutputToProjects(),
-                                apply.isInProject(), apply.left(), project.child());
-                    List<NamedExpression> newProjects = new ArrayList<>();
-                    newProjects.addAll(apply.left().getOutput());
+                    Plan newCorrelate = apply.withChildren(apply.left(), project.child());
+                    List<NamedExpression> newProjects = new ArrayList<>(apply.left().getOutput());
                     if (apply.getSubqueryExpr() instanceof ScalarSubquery) {
-                        newProjects.add(project.getProjects().get(0));
+                        // unnest correlated scalar subquery may add count(*) and any_value() to project list
+                        // the previous SubqueryToApply rule will make sure of it. So the output column
+                        // may be 1 or 2, we add a check here.
+                        int size = project.getProjects().size();
+                        Preconditions.checkState(size == 1 || size == 2,
+                                "ScalarSubquery should only have one or two output column");
+                        newProjects.addAll(project.getProjects());
+                    }
+                    if (apply.isMarkJoin()) {
+                        newProjects.add(apply.getMarkJoinSlotReference().get());
                     }
                     return project.withProjectsAndChild(newProjects, newCorrelate);
                 }).toRule(RuleType.PULL_UP_PROJECT_UNDER_APPLY);

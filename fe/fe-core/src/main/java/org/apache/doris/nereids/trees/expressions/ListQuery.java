@@ -48,8 +48,8 @@ public class ListQuery extends SubqueryExpr {
     }
 
     @Override
-    public String toSql() {
-        return " (LISTQUERY) " + super.toSql();
+    public String computeToSql() {
+        return " (LISTQUERY) " + super.computeToSql();
     }
 
     @Override
@@ -67,5 +67,10 @@ public class ListQuery extends SubqueryExpr {
                 dataType == queryPlan.getOutput().get(0).getDataType()
                     ? Optional.of(queryPlan.getOutput().get(0))
                     : Optional.of(new Cast(queryPlan.getOutput().get(0), dataType)));
+    }
+
+    @Override
+    public ListQuery withSubquery(LogicalPlan subquery) {
+        return new ListQuery(subquery, correlateSlots, typeCoercionExpr);
     }
 }

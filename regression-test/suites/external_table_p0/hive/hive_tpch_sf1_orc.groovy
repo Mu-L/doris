@@ -17,9 +17,12 @@
 
 suite("test_catalog_hive_orc", "p0,external,hive,external_docker,external_docker_hive") {
 
+    String enable_file_cache = "false"
+
     def q01 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q01 """
@@ -49,7 +52,8 @@ order by
 
     def q02 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=2"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=2"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         sql """set enable_projection=true"""
@@ -98,7 +102,8 @@ limit 100;
 
     def q03 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         sql """set enable_projection=true"""
@@ -131,7 +136,8 @@ limit 10;
 
     def q04 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=1"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=1"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q04 """
@@ -160,7 +166,8 @@ order by
 
     def q05 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q05 """
@@ -181,7 +188,8 @@ order by revenue desc;
 
     def q06 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=1"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=1"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q06 """
@@ -199,7 +207,8 @@ where
 
     def q07 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=4"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=4"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q07 """
@@ -239,7 +248,8 @@ order by
 
     def q08 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=1"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=1"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q08 """
@@ -285,7 +295,8 @@ order by
 
     def q09 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=4"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=4"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q09 """
@@ -317,7 +328,8 @@ order by
 
     def q10 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q10 """
@@ -359,7 +371,8 @@ limit 20;
 
     def q11 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=2"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=2"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q11 """
@@ -395,7 +408,8 @@ order by
 
     def q12 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=2"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=2"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=true"""
         qt_q12 """
@@ -431,7 +445,8 @@ order by
 
     def q13 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=4"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=4"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q13 """
@@ -460,7 +475,8 @@ order by
 
     def q14 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q14 """
@@ -482,7 +498,8 @@ where
 
     def q15 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=true"""
         qt_q15 """
@@ -521,7 +538,8 @@ order by
 
     def q16 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=true"""
         qt_q16 """
@@ -560,7 +578,8 @@ order by
 
     def q17 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=1"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=1"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=true"""
         qt_q17 """
@@ -588,10 +607,11 @@ where
 
     def q18 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=false"""
-        qt_q01 """
+        qt_q18 """
 select
     c_name,
     c_custkey,
@@ -635,7 +655,8 @@ limit 100;
 
     def q19 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=false"""
         qt_q19 """
@@ -679,7 +700,8 @@ where
 
     def q20 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=true"""
         qt_q20 """
@@ -713,7 +735,8 @@ order by s_name;
 
     def q21 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=true"""
         sql """set enable_cost_based_join_reorder=true"""
         qt_q21 """
@@ -753,7 +776,8 @@ limit 100;
 
     def q22 = { 
         sql """set exec_mem_limit=8589934592"""
-        sql """set parallel_fragment_exec_instance_num=8"""
+        sql """set enable_file_cache=${enable_file_cache}"""
+        sql """set parallel_pipeline_task_num=8"""
         sql """set disable_join_reorder=false"""
         sql """set enable_cost_based_join_reorder=true"""
         qt_q22 """
@@ -797,20 +821,7 @@ order by
         """
     }
 
-    String enabled = context.config.otherConfigs.get("enableHiveTest")
-    if (enabled != null && enabled.equalsIgnoreCase("true")) {
-        String hms_port = context.config.otherConfigs.get("hms_port")
-        String catalog_name = "test_catalog_hive_orc"
-        String externalEnvIp = context.config.otherConfigs.get("externalEnvIp")
-
-        sql """drop catalog if exists ${catalog_name}"""
-        sql """create catalog if not exists ${catalog_name} properties (
-            "type"="hms",
-            'hive.metastore.uris' = 'thrift://${externalEnvIp}:${hms_port}'
-        );"""
-        sql """switch ${catalog_name}"""
-        sql """use `tpch1_orc`"""
-
+    def run_tpch = {
         q01()
         q02()
         q03()
@@ -833,6 +844,48 @@ order by
         q20()
         q21()
         q22()
+    }
+
+    // String enabled = context.config.otherConfigs.get("enableHiveTest")
+    // cost too much time in p0, disable it temporary
+    String enabled = "false";
+    if (enabled == null || !enabled.equalsIgnoreCase("true")) {
+        logger.info("diable Hive test.")
+        return;
+    }
+    
+    for (String hivePrefix : ["hive2", "hive3"]) {
+        String hms_port = context.config.otherConfigs.get(hivePrefix + "HmsPort")
+        String catalog_name = "test_catalog_${hivePrefix}_orc"
+        String externalEnvIp = context.config.otherConfigs.get("externalEnvIp")
+
+        sql """drop catalog if exists ${catalog_name}"""
+        sql """create catalog if not exists ${catalog_name} properties (
+            "type"="hms",
+            'hive.metastore.uris' = 'thrift://${externalEnvIp}:${hms_port}'
+        );"""
+        sql """switch ${catalog_name}"""
+        sql """use `tpch1_orc`"""
+
+        // without file cache
+        enable_file_cache = "false"
+        def startTime = System.currentTimeMillis()
+        run_tpch()
+        def without_cache_time = System.currentTimeMillis() - startTime
+
+        // with file cache, run the first time
+        enable_file_cache = "true"
+        startTime = System.currentTimeMillis()
+        run_tpch()
+        def with_cache_first_time = System.currentTimeMillis() - startTime
+
+        // with file cache, run the second time
+        enable_file_cache = "true"
+        startTime = System.currentTimeMillis()
+        run_tpch()
+        def with_cache_second_time = System.currentTimeMillis() - startTime
+
+        println("""tpch orc running time(disable, enable, enable): ${without_cache_time}ms, ${with_cache_first_time}ms, ${with_cache_second_time}ms""")
 
         sql """drop catalog if exists ${catalog_name}"""
     }

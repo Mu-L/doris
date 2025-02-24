@@ -18,12 +18,15 @@
 package org.apache.doris.nereids.trees.plans.logical;
 
 import org.apache.doris.nereids.memo.GroupExpression;
+import org.apache.doris.nereids.properties.DataTrait;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.properties.OrderKey;
 import org.apache.doris.nereids.trees.expressions.ExprId;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.SlotReference;
+import org.apache.doris.nereids.trees.plans.BlockFuncDepsPropagation;
+import org.apache.doris.nereids.trees.plans.ObjectId;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.algebra.TopN;
@@ -41,7 +44,8 @@ import java.util.Set;
 /**
  * use for defer materialize top n
  */
-public class LogicalDeferMaterializeTopN<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_TYPE> implements TopN {
+public class LogicalDeferMaterializeTopN<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_TYPE>
+        implements TopN, BlockFuncDepsPropagation {
 
     private final LogicalTopN<? extends Plan> logicalTopN;
 
@@ -167,5 +171,20 @@ public class LogicalDeferMaterializeTopN<CHILD_TYPE extends Plan> extends Logica
                 "deferMaterializeSlotIds", deferMaterializeSlotIds,
                 "columnIdSlot", columnIdSlot
         );
+    }
+
+    @Override
+    public void computeFd(DataTrait.Builder builder) {
+        builder.addFuncDepsDG(child().getLogicalProperties().getTrait());
+    }
+
+    @Override
+    public void computeEqualSet(DataTrait.Builder builder) {
+        builder.addEqualSet(child().getLogicalProperties().getTrait());
+    }
+
+    @Override
+    public ObjectId getObjectId() {
+        return id;
     }
 }

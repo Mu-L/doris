@@ -56,15 +56,6 @@ suite("test_cast_null") {
         );
     """
 
-    sql """
-        set enable_nereids_planner=false;
-    """
-
-    explain {
-        sql """SELECT * FROM test_table_t53 LEFT JOIN test_table_t0 ON (('I4') LIKE (CAST(CAST(DATE '1970-05-06' AS FLOAT) AS VARCHAR) ));"""
-        contains "19700506"
-    }
-
     qt_sql1 """
         select CAST(CAST(DATE '1970-05-06' AS FLOAT) AS VARCHAR);
     """
@@ -73,15 +64,35 @@ suite("test_cast_null") {
         select 'abc' like null;
     """
 
-    sql """
-        set enable_nereids_planner=true;
-    """
-
-    qt_sql3 """
-        select CAST(CAST(DATE '1970-05-06' AS FLOAT) AS VARCHAR);
-    """
-
     qt_sql4 """
         select 'abc' like null;
+    """
+
+    sql """
+        drop table if exists test_table_tabc;
+    """
+
+    sql """
+        CREATE TABLE `test_table_tabc` (
+        `k1` DECIMAL(12, 5) NULL
+        ) ENGINE=OLAP
+        DUPLICATE KEY(`k1`)
+        COMMENT 'OLAP'
+        DISTRIBUTED BY HASH(`k1`) BUCKETS 1
+        PROPERTIES (
+        "replication_allocation" = "tag.location.default: 1",
+        "is_being_synced" = "false",
+        "storage_format" = "V2",
+        "light_schema_change" = "true",
+        "disable_auto_compaction" = "false",
+        "enable_single_replica_compaction" = "false"
+        );
+    """
+    sql """insert into test_table_tabc values(1.0);"""
+
+    qt_sql5 """select k1 <> '' from test_table_tabc;"""
+
+    sql """
+        drop table if exists test_table_tabc;
     """
 }

@@ -19,18 +19,20 @@
 
 #include <gen_cpp/PlanNodes_types.h>
 
-#include "common/factory_creator.h"
 #include "common/status.h"
+#include "runtime/descriptors.h"
 #include "runtime/types.h"
-#include "vec/exprs/vexpr_context.h"
+#include "util/profile_collector.h"
+#include "vec/exprs/vexpr_fwd.h"
 
 namespace doris::vectorized {
+#include "common/compile_check_begin.h"
 
 class Block;
 // This a reader interface for all file readers.
 // A GenericReader is responsible for reading a file and return
 // a set of blocks with specified schema,
-class GenericReader {
+class GenericReader : public ProfileCollector {
 public:
     GenericReader() : _push_down_agg_type(TPushAggOp::type::NONE) {}
     void set_push_down_agg_type(TPushAggOp::type push_down_agg_type) {
@@ -39,10 +41,6 @@ public:
 
     virtual Status get_next_block(Block* block, size_t* read_rows, bool* eof) = 0;
 
-    virtual std::unordered_map<std::string, TypeDescriptor> get_name_to_type() {
-        std::unordered_map<std::string, TypeDescriptor> map;
-        return map;
-    }
     virtual Status get_columns(std::unordered_map<std::string, TypeDescriptor>* name_to_type,
                                std::unordered_set<std::string>* missing_cols) {
         return Status::NotSupported("get_columns is not implemented");
@@ -52,7 +50,7 @@ public:
                                      std::vector<TypeDescriptor>* col_types) {
         return Status::NotSupported("get_parsed_schema is not implemented for this reader.");
     }
-    virtual ~GenericReader() = default;
+    ~GenericReader() override = default;
 
     /// If the underlying FileReader has filled the partition&missing columns,
     /// The FileScanner does not need to fill
@@ -68,14 +66,15 @@ public:
         return Status::OK();
     }
 
-    virtual void close() {}
+    virtual Status close() { return Status::OK(); }
 
 protected:
     const size_t _MIN_BATCH_SIZE = 4064; // 4094 - 32(padding)
 
     /// Whether the underlying FileReader has filled the partition&missing columns
     bool _fill_all_columns = false;
-    TPushAggOp::type _push_down_agg_type;
+    TPushAggOp::type _push_down_agg_type {};
 };
 
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

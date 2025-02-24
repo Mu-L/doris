@@ -18,7 +18,9 @@
 package org.apache.doris.nereids.rules.rewrite.mv;
 
 import org.apache.doris.analysis.CreateMaterializedViewStmt;
+import org.apache.doris.catalog.AggregateType;
 import org.apache.doris.catalog.Column;
+import org.apache.doris.catalog.KeysType;
 import org.apache.doris.catalog.MaterializedIndex;
 import org.apache.doris.catalog.MaterializedIndexMeta;
 import org.apache.doris.catalog.OlapTable;
@@ -27,23 +29,21 @@ import org.apache.doris.nereids.trees.expressions.Alias;
 import org.apache.doris.nereids.trees.expressions.CaseWhen;
 import org.apache.doris.nereids.trees.expressions.Cast;
 import org.apache.doris.nereids.trees.expressions.ComparisonPredicate;
-import org.apache.doris.nereids.trees.expressions.EqualTo;
+import org.apache.doris.nereids.trees.expressions.EqualPredicate;
 import org.apache.doris.nereids.trees.expressions.ExprId;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.InPredicate;
 import org.apache.doris.nereids.trees.expressions.IsNull;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
-import org.apache.doris.nereids.trees.expressions.NullSafeEqual;
+import org.apache.doris.nereids.trees.expressions.Not;
 import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.SlotReference;
+import org.apache.doris.nereids.trees.expressions.VirtualSlotReference;
 import org.apache.doris.nereids.trees.expressions.WhenClause;
+import org.apache.doris.nereids.trees.expressions.functions.ExpressionTrait;
 import org.apache.doris.nereids.trees.expressions.functions.agg.AggregateFunction;
-import org.apache.doris.nereids.trees.expressions.functions.agg.Count;
-import org.apache.doris.nereids.trees.expressions.functions.agg.Ndv;
-import org.apache.doris.nereids.trees.expressions.functions.scalar.HllHash;
+import org.apache.doris.nereids.trees.expressions.functions.agg.Sum;
 import org.apache.doris.nereids.trees.expressions.functions.scalar.ScalarFunction;
-import org.apache.doris.nereids.trees.expressions.functions.scalar.ToBitmap;
-import org.apache.doris.nereids.trees.expressions.functions.scalar.ToBitmapWithCheck;
 import org.apache.doris.nereids.trees.expressions.literal.BooleanLiteral;
 import org.apache.doris.nereids.trees.expressions.literal.Literal;
 import org.apache.doris.nereids.trees.expressions.literal.TinyIntLiteral;
@@ -57,6 +57,7 @@ import org.apache.doris.nereids.trees.plans.logical.LogicalProject;
 import org.apache.doris.nereids.trees.plans.logical.LogicalRepeat;
 import org.apache.doris.nereids.trees.plans.visitor.DefaultPlanVisitor;
 import org.apache.doris.nereids.util.ExpressionUtils;
+import org.apache.doris.nereids.util.PlanUtils;
 import org.apache.doris.planner.PlanNode;
 
 import com.google.common.collect.ImmutableList;
@@ -64,7 +65,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Lists;
-import org.apache.commons.collections.CollectionUtils;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -77,12 +77,13 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Base class for selecting materialized index rules.
  */
 public abstract class AbstractSelectMaterializedIndexRule {
-    protected boolean shouldSelectIndex(LogicalOlapScan scan) {
+    protected boolean shouldSelectIndexWithAgg(LogicalOlapScan scan) {
         switch (scan.getTable().getKeysType()) {
             case AGG_KEYS:
             case UNIQUE_KEYS:
@@ -93,18 +94,88 @@ public abstract class AbstractSelectMaterializedIndexRule {
         }
     }
 
-    protected boolean containAllRequiredColumns(MaterializedIndex index, LogicalOlapScan scan,
+    protected boolean shouldSelectIndexWithoutAgg(LogicalOlapScan scan) {
+        switch (scan.getTable().getKeysType()) {
+            case AGG_KEYS:
+            case UNIQUE_KEYS:
+            case DUP_KEYS:
+                return !scan.isIndexSelected();
+            default:
+                return false;
+        }
+    }
+
+    // get the predicates that can be ignored when all aggregate functions are sum
+    protected static List<Expression> getPrunedPredicatesWithAllSumAgg(List<Expression> aggExpressions,
+            Set<Expression> predicateExpr) {
+        List<Expression> prunedExpr = new ArrayList<>();
+
+        Set<String> sumSlots = aggExpressions.stream().map(e -> e.child(0).toSql())
+                .collect(Collectors.toCollection(() -> new TreeSet<String>(String.CASE_INSENSITIVE_ORDER)));
+        for (Expression expr : predicateExpr) {
+            if (expr instanceof Not && expr.child(0) instanceof IsNull) {
+                Expression slot = expr.child(0).child(0);
+                String countColumn = normalizeName(CreateMaterializedViewStmt.mvColumnBuilder(AggregateType.SUM,
+                        CreateMaterializedViewStmt.mvColumnBuilder(slotToCaseWhen(slot).toSql())));
+                if (sumSlots.contains(countColumn)) {
+                    prunedExpr.add(expr);
+                }
+            }
+        }
+        return prunedExpr;
+    }
+
+    // we can prune some predicates when there is no group-by column
+    protected static List<Expression> getPrunedPredicates(List<Expression> aggExpressions,
+            Set<Expression> predicateExpr) {
+        List<Expression> prunedExpr = new ArrayList<>();
+
+        boolean isAllSumAgg = true;
+        for (Expression expr : aggExpressions) {
+            if (!(expr instanceof Sum)) {
+                isAllSumAgg = false;
+                break;
+            }
+        }
+        if (isAllSumAgg) {
+            prunedExpr.addAll(getPrunedPredicatesWithAllSumAgg(aggExpressions, predicateExpr));
+        }
+
+        return prunedExpr;
+    }
+
+    protected static boolean containAllKeyColumns(OlapTable table, MaterializedIndex index) {
+        Set<String> mvColNames = table.getKeyColumnsByIndexId(index.getId()).stream()
+                .map(c -> normalizeName(parseMvColumnToSql(c.getNameWithoutMvPrefix())))
+                .collect(Collectors.toCollection(() -> new TreeSet<String>(String.CASE_INSENSITIVE_ORDER)));
+
+        Set<String> keyColNames = table.getBaseSchemaKeyColumns().stream()
+                .map(c -> normalizeName(parseMvColumnToSql(c.getNameWithoutMvPrefix())))
+                .collect(Collectors.toCollection(() -> new TreeSet<String>(String.CASE_INSENSITIVE_ORDER)));
+
+        return keyColNames.containsAll(mvColNames);
+    }
+
+    protected static boolean containAllRequiredColumns(MaterializedIndex index, LogicalOlapScan scan,
             Set<Slot> requiredScanOutput, Set<? extends Expression> requiredExpr, Set<Expression> predicateExpr) {
         OlapTable table = scan.getTable();
         MaterializedIndexMeta meta = table.getIndexMetaByIndexId(index.getId());
 
-        Set<String> predicateExprSql = predicateExpr.stream().map(e -> e.toSql()).collect(Collectors.toSet());
+        Set<String> predicateExprSql = predicateExpr.stream().map(ExpressionTrait::toSql).collect(Collectors.toSet());
+
+        // Here we use toSqlWithoutTbl because the output of toSql() is slot#[0] in Nereids
         Set<String> indexConjuncts = PlanNode.splitAndCompoundPredicateToConjuncts(meta.getWhereClause()).stream()
-                .map(e -> new NereidsParser().parseExpression(e.toSql()).toSql()).collect(Collectors.toSet());
-        Set<String> commonConjuncts = indexConjuncts.stream().filter(e -> predicateExprSql.contains(e))
-                .collect(Collectors.toSet());
-        if (commonConjuncts.size() != indexConjuncts.size()) {
-            return false;
+                .map(e -> {
+                    e.setDisableTableName(true);
+                    return e;
+                }).map(e -> new NereidsParser().parseExpression(e.toSql()).toSql()).collect(Collectors.toSet());
+
+        for (String indexConjunct : indexConjuncts) {
+            if (predicateExprSql.contains(indexConjunct)) {
+                predicateExprSql.remove(indexConjunct);
+            } else {
+                return false;
+            }
         }
 
         Set<String> requiredMvColumnNames = requiredScanOutput.stream()
@@ -116,10 +187,24 @@ public abstract class AbstractSelectMaterializedIndexRule {
                 .collect(Collectors.toCollection(() -> new TreeSet<String>(String.CASE_INSENSITIVE_ORDER)));
         mvColNames.addAll(indexConjuncts);
 
-        return mvColNames.containsAll(requiredMvColumnNames)
-                && (indexConjuncts.isEmpty() || commonConjuncts.size() == predicateExprSql.size())
-                || requiredExpr.stream().map(AbstractSelectMaterializedIndexRule::removeCastAndAlias)
-                        .filter(e -> !containsAllColumn(e, mvColNames)).collect(Collectors.toSet()).isEmpty();
+        if (mvColNames.containsAll(requiredMvColumnNames) && predicateExprSql.isEmpty()) {
+            return true;
+        }
+
+        Set<Expression> remained = requiredExpr.stream().filter(e -> !containsAllColumn(e, mvColNames))
+                .collect(Collectors.toSet());
+        if (remained.isEmpty()) {
+            return true;
+        }
+
+        if (!scan.getGroupExpression().isPresent()) {
+            Set<Expression> prunedExpr = getPrunedPredicates(
+                    requiredExpr.stream().filter(e -> e instanceof AggregateFunction).collect(Collectors.toList()),
+                    predicateExpr).stream().collect(Collectors.toSet());
+            remained = remained.stream().filter(e -> !prunedExpr.contains(e)).collect(Collectors.toSet());
+        }
+
+        return remained.isEmpty();
     }
 
     public static String parseMvColumnToSql(String mvName) {
@@ -133,48 +218,41 @@ public abstract class AbstractSelectMaterializedIndexRule {
                     org.apache.doris.analysis.CreateMaterializedViewStmt.mvColumnBreaker(mvName)).toSql());
     }
 
-    protected static Expression removeCastAndAlias(Expression expression) {
-        List<Expression> children = new ArrayList<>();
-        for (Expression child : expression.children()) {
-            children.add(removeCastAndAlias(child));
-        }
-        if (expression instanceof Cast) {
-            return ((Cast) expression.withChildren(children)).child();
-        }
-        if (expression instanceof Alias) {
-            return ((Alias) expression.withChildren(children)).child();
-        }
-        return children.isEmpty() ? expression : expression.withChildren(children);
-    }
-
     protected static boolean containsAllColumn(Expression expression, Set<String> mvColumnNames) {
-        if (mvColumnNames.contains(expression.toSql())) {
+        String sql = expression.toSql();
+        if (mvColumnNames.contains(sql) || mvColumnNames
+                .contains(org.apache.doris.analysis.CreateMaterializedViewStmt.mvColumnBreaker(sql))) {
             return true;
         }
         if (expression.children().isEmpty()) {
-            return false;
+            return expression instanceof VirtualSlotReference;
         }
-        boolean childContain = true;
         for (Expression child : expression.children()) {
             if (child instanceof Literal) {
                 continue;
             }
-            childContain &= containsAllColumn(child, mvColumnNames);
+            if (!containsAllColumn(child, mvColumnNames)) {
+                return false;
+            }
         }
-        return childContain;
+        return true;
     }
 
     /**
      * 1. find matching key prefix most.
      * 2. sort by row count, column count and index id.
      */
-    protected long selectBestIndex(
+    protected static long selectBestIndex(
             List<MaterializedIndex> candidates,
             LogicalOlapScan scan,
-            Set<Expression> predicates) {
+            Set<Expression> predicates,
+            Set<? extends Expression> requiredExprs) {
         if (candidates.isEmpty()) {
             return scan.getTable().getBaseIndexId();
         }
+
+        MaterializedIndex baseIndex = scan.getTable().getBaseIndex();
+        candidates.add(baseIndex);
 
         OlapTable table = scan.getTable();
         // Scan slot exprId -> slot name
@@ -183,11 +261,20 @@ public abstract class AbstractSelectMaterializedIndexRule {
                 .collect(Collectors.toMap(NamedExpression::getExprId, NamedExpression::getName));
 
         // find matching key prefix most.
-        List<MaterializedIndex> matchingKeyPrefixMost = matchPrefixMost(scan, candidates, predicates, exprIdToName);
+        candidates = matchPrefixMost(scan, candidates, predicates, exprIdToName);
+        if (candidates.size() > 1) {
+            Set<String> requiredExprNames = requiredExprs.stream().map(e -> {
+                if (e instanceof Alias) {
+                    return ((Alias) e).child().toSql().toLowerCase();
+                }
+                return e.toSql().toLowerCase();
+            }).collect(Collectors.toSet());
+            candidates = matchColumnMost(scan.getTable(), candidates, requiredExprNames);
+        }
 
         List<Long> partitionIds = scan.getSelectedPartitionIds();
         // sort by row count, column count and index id.
-        List<Long> sortedIndexIds = matchingKeyPrefixMost.stream()
+        List<Long> sortedIndexIds = candidates.stream()
                 .map(MaterializedIndex::getId)
                 .sorted(Comparator
                         // compare by row count
@@ -196,21 +283,41 @@ public abstract class AbstractSelectMaterializedIndexRule {
                                 .sum())
                         // compare by column count
                         .thenComparing(rid -> table.getSchemaByIndexId((Long) rid).size())
+                        // prioritize using non-base index
+                        .thenComparing(rid -> (Long) rid == baseIndex.getId())
                         // compare by index id
                         .thenComparing(rid -> (Long) rid))
                 .collect(Collectors.toList());
 
-        return CollectionUtils.isEmpty(sortedIndexIds) ? scan.getTable().getBaseIndexId() : sortedIndexIds.get(0);
+        return table.getBestMvIdWithHint(sortedIndexIds);
     }
 
-    protected List<MaterializedIndex> matchPrefixMost(
+    protected static List<MaterializedIndex> matchPrefixMost(
             LogicalOlapScan scan,
             List<MaterializedIndex> candidate,
             Set<Expression> predicates,
             Map<ExprId, String> exprIdToName) {
         Map<Boolean, Set<String>> split = filterCanUsePrefixIndexAndSplitByEquality(predicates, exprIdToName);
-        Set<String> equalColNames = split.getOrDefault(true, ImmutableSet.of());
-        Set<String> nonEqualColNames = split.getOrDefault(false, ImmutableSet.of());
+        Set<String> equalColNames = split.getOrDefault(true, ImmutableSet.of()).stream()
+                .map(String::toLowerCase).collect(Collectors.toSet());
+        Set<String> nonEqualColNames = split.getOrDefault(false, ImmutableSet.of()).stream()
+                .map(String::toLowerCase).collect(Collectors.toSet());
+
+        // prioritize using index with where clause
+        if (candidate.stream()
+                .anyMatch(index -> scan.getTable().getIndexMetaByIndexId(index.getId()).getWhereClause() != null)) {
+            candidate = candidate.stream()
+                    .filter(index -> scan.getTable().getIndexMetaByIndexId(index.getId()).getWhereClause() != null)
+                    .collect(Collectors.toList());
+        }
+
+        // prioritize using index with pre agg
+        if (candidate.stream().anyMatch(
+                index -> scan.getTable().getIndexMetaByIndexId(index.getId()).getKeysType() != KeysType.DUP_KEYS)) {
+            candidate = candidate.stream().filter(
+                    index -> scan.getTable().getIndexMetaByIndexId(index.getId()).getKeysType() != KeysType.DUP_KEYS)
+                    .collect(Collectors.toList());
+        }
 
         if (!(equalColNames.isEmpty() && nonEqualColNames.isEmpty())) {
             List<MaterializedIndex> matchingResult = matchKeyPrefixMost(scan.getTable(), candidate,
@@ -229,7 +336,7 @@ public abstract class AbstractSelectMaterializedIndexRule {
      * Filter the input conjuncts those can use prefix and split into 2 groups: is equal-to or non-equal-to predicate
      * when comparing the key column.
      */
-    private Map<Boolean, Set<String>> filterCanUsePrefixIndexAndSplitByEquality(
+    private static Map<Boolean, Set<String>> filterCanUsePrefixIndexAndSplitByEquality(
             Set<Expression> conjuncts, Map<ExprId, String> exprIdToColName) {
         return conjuncts.stream()
                 .map(expr -> PredicateChecker.canUsePrefixIndex(expr, exprIdToColName))
@@ -296,7 +403,7 @@ public abstract class AbstractSelectMaterializedIndexRule {
 
         @Override
         public PrefixIndexCheckResult visitComparisonPredicate(ComparisonPredicate cp, Map<ExprId, String> context) {
-            if (cp instanceof EqualTo || cp instanceof NullSafeEqual) {
+            if (cp instanceof EqualPredicate) {
                 return check(cp, context, PrefixIndexCheckResult::createEqual);
             } else {
                 return check(cp, context, PrefixIndexCheckResult::createNonEqual);
@@ -323,7 +430,7 @@ public abstract class AbstractSelectMaterializedIndexRule {
     ///////////////////////////////////////////////////////////////////////////
     // Matching key prefix
     ///////////////////////////////////////////////////////////////////////////
-    private List<MaterializedIndex> matchKeyPrefixMost(
+    private static List<MaterializedIndex> matchKeyPrefixMost(
             OlapTable table,
             List<MaterializedIndex> indexes,
             Set<String> equalColumns,
@@ -341,16 +448,16 @@ public abstract class AbstractSelectMaterializedIndexRule {
         return collect.descendingMap().firstEntry().getValue();
     }
 
-    private int indexKeyPrefixMatchCount(
+    private static int indexKeyPrefixMatchCount(
             OlapTable table,
             MaterializedIndex index,
             Set<String> equalColNames,
             Set<String> nonEqualColNames) {
         int matchCount = 0;
         for (Column column : table.getSchemaByIndexId(index.getId())) {
-            if (equalColNames.contains(column.getName())) {
+            if (equalColNames.contains(normalizeName(column.getNameWithoutMvPrefix().toLowerCase()))) {
                 matchCount++;
-            } else if (nonEqualColNames.contains(column.getName())) {
+            } else if (nonEqualColNames.contains(normalizeName(column.getNameWithoutMvPrefix().toLowerCase()))) {
                 // un-equivalence predicate's columns can match only first column in index.
                 matchCount++;
                 break;
@@ -361,8 +468,40 @@ public abstract class AbstractSelectMaterializedIndexRule {
         return matchCount;
     }
 
-    protected boolean preAggEnabledByHint(LogicalOlapScan olapScan) {
-        return olapScan.getHints().stream().anyMatch("PREAGGOPEN"::equalsIgnoreCase);
+    private static List<MaterializedIndex> matchColumnMost(
+            OlapTable table,
+            List<MaterializedIndex> indexes,
+            Set<String> requiredExprs) {
+        TreeMap<Integer, List<MaterializedIndex>> collect = indexes.stream()
+                .collect(Collectors.toMap(
+                        index -> columnMatchCount(table, index, requiredExprs),
+                        Lists::newArrayList,
+                        (l1, l2) -> {
+                            l1.addAll(l2);
+                            return l1;
+                        },
+                        TreeMap::new)
+                );
+        return collect.descendingMap().firstEntry().getValue();
+    }
+
+    private static int columnMatchCount(OlapTable table, MaterializedIndex index, Set<String> requiredColNames) {
+        int matchCount = 0;
+        for (Column column : table.getSchemaByIndexId(index.getId())) {
+            if (requiredColNames.contains(normalizeName(column.getNameWithoutMvPrefix().toLowerCase()))) {
+                matchCount++;
+            }
+        }
+        return matchCount;
+    }
+
+    protected static boolean preAggEnabledByHint(LogicalOlapScan olapScan) {
+        for (String hint : olapScan.getHints()) {
+            if ("PREAGGOPEN".equalsIgnoreCase(hint)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static String normalizeName(String name) {
@@ -374,35 +513,15 @@ public abstract class AbstractSelectMaterializedIndexRule {
                 new TinyIntLiteral((byte) 1));
     }
 
-    protected static String spliceScalarFunctionWithSlot(ScalarFunction scalarFunction, Slot slot) {
-        if (scalarFunction instanceof ToBitmap) {
-            return new ToBitmapWithCheck(slot).toSql();
-        }
-        return scalarFunction.withChildren(slot).toSql();
-    }
-
-    protected static String spliceAggFunctionWithSlot(AggregateFunction aggregateFunction, Slot slot) {
-        if (aggregateFunction instanceof Count && aggregateFunction.isDistinct() && aggregateFunction.arity() == 1) {
-            return new ToBitmapWithCheck(slot).toSql();
-        }
-        if (aggregateFunction instanceof Ndv) {
-            return new HllHash(slot).toSql();
-        }
-        return aggregateFunction.withChildren(slot).toSql();
-    }
-
     protected SlotContext generateBaseScanExprToMvExpr(LogicalOlapScan mvPlan) {
+        if (mvPlan.getSelectedIndexId() == mvPlan.getTable().getBaseIndexId()) {
+            return SlotContext.EMPTY;
+        }
         Map<Slot, Slot> baseSlotToMvSlot = new HashMap<>();
         Map<String, Slot> mvNameToMvSlot = new HashMap<>();
-        if (mvPlan.getSelectedIndexId() == mvPlan.getTable().getBaseIndexId()) {
-            return new SlotContext(baseSlotToMvSlot, mvNameToMvSlot, new TreeSet<Expression>());
-        }
         for (Slot mvSlot : mvPlan.getOutputByIndex(mvPlan.getSelectedIndexId())) {
             boolean isPushed = false;
             for (Slot baseSlot : mvPlan.getOutput()) {
-                if (org.apache.doris.analysis.CreateMaterializedViewStmt.isMVColumn(mvSlot.getName())) {
-                    continue;
-                }
                 if (baseSlot.toSql().equalsIgnoreCase(
                         org.apache.doris.analysis.CreateMaterializedViewStmt.mvColumnBreaker(
                             normalizeName(mvSlot.getName())))) {
@@ -412,11 +531,6 @@ public abstract class AbstractSelectMaterializedIndexRule {
                 }
             }
             if (!isPushed) {
-                if (org.apache.doris.analysis.CreateMaterializedViewStmt.isMVColumn(mvSlot.getName())) {
-                    mvNameToMvSlot.put(normalizeName(
-                            org.apache.doris.analysis.CreateMaterializedViewStmt.mvColumnBreaker(mvSlot.getName())),
-                            mvSlot);
-                }
                 mvNameToMvSlot.put(normalizeName(mvSlot.getName()), mvSlot);
             }
         }
@@ -425,11 +539,33 @@ public abstract class AbstractSelectMaterializedIndexRule {
 
         return new SlotContext(baseSlotToMvSlot, mvNameToMvSlot,
                 PlanNode.splitAndCompoundPredicateToConjuncts(meta.getWhereClause()).stream()
-                        .map(e -> new NereidsParser().parseExpression(e.toSql())).collect(Collectors.toSet()));
+                        .map(e -> {
+                            e.setDisableTableName(true);
+                            return e;
+                        })
+                        .map(e -> new NereidsParser().parseExpression(e.toSql()))
+                        .collect(Collectors.toSet()));
+    }
+
+    // Call this generateBaseScanExprToMvExpr only when we have both agg and filter
+    protected SlotContext generateBaseScanExprToMvExpr(LogicalOlapScan mvPlan, Set<Expression> requiredExpr,
+            Set<Expression> predicateExpr) {
+        SlotContext context = generateBaseScanExprToMvExpr(mvPlan);
+        if (mvPlan.getGroupExpression().isPresent()) {
+            return context;
+        }
+        Set<Expression> pruned = getPrunedPredicates(
+                requiredExpr.stream().filter(e -> e instanceof AggregateFunction).collect(Collectors.toList()),
+                predicateExpr).stream().collect(Collectors.toSet());
+
+        return new SlotContext(context.baseSlotToMvSlot, context.mvNameToMvSlot,
+                Stream.concat(pruned.stream(), context.trueExprs.stream()).collect(Collectors.toSet()));
     }
 
     /** SlotContext */
     protected static class SlotContext {
+        public static final SlotContext EMPTY
+                = new SlotContext(ImmutableMap.of(), ImmutableMap.of(), ImmutableSet.of());
 
         // base index Slot to selected mv Slot
         public final Map<Slot, Slot> baseSlotToMvSlot;
@@ -485,20 +621,20 @@ public abstract class AbstractSelectMaterializedIndexRule {
         public LogicalRepeat<Plan> visitLogicalRepeat(LogicalRepeat<? extends Plan> repeat, Void ctx) {
             Plan child = repeat.child(0).accept(this, ctx);
             List<List<Expression>> groupingSets = repeat.getGroupingSets();
-            ImmutableList.Builder<List<Expression>> newGroupingExprs = ImmutableList.builder();
+            List<List<Expression>> newGroupingExprs = Lists.newArrayList();
             for (List<Expression> expressions : groupingSets) {
-                newGroupingExprs.add(expressions.stream()
-                        .map(expr -> new ReplaceExpressionWithMvColumn(slotContext).replace(expr))
-                        .collect(ImmutableList.toImmutableList())
-                );
+                newGroupingExprs.add(
+                        expressions.stream().map(expr -> new ReplaceExpressionWithMvColumn(slotContext).replace(expr))
+                                .collect(ImmutableList.toImmutableList()));
             }
 
             List<NamedExpression> outputExpressions = repeat.getOutputExpressions();
-            List<NamedExpression> newOutputExpressions = outputExpressions.stream()
-                    .map(expr -> (NamedExpression) new ReplaceExpressionWithMvColumn(slotContext).replace(expr))
-                    .collect(ImmutableList.toImmutableList());
+            List<NamedExpression> newOutputExpressions = PlanUtils.adjustNullableForRepeat(newGroupingExprs,
+                    outputExpressions.stream()
+                            .map(expr -> (NamedExpression) new ReplaceExpressionWithMvColumn(slotContext).replace(expr))
+                            .collect(ImmutableList.toImmutableList()));
 
-            return repeat.withNormalizedExpr(newGroupingExprs.build(), newOutputExpressions, child);
+            return repeat.withNormalizedExpr(newGroupingExprs, newOutputExpressions, child);
         }
 
         @Override
@@ -594,14 +730,6 @@ public abstract class AbstractSelectMaterializedIndexRule {
         }
 
         @Override
-        public Expression visitAlias(Alias alias, Void context) {
-            if (mvNameToMvSlot.containsKey(alias.toSlot().toSql())) {
-                return mvNameToMvSlot.get(alias.toSlot().toSql());
-            }
-            return visit(alias, context);
-        }
-
-        @Override
         public Expression visitScalarFunction(ScalarFunction scalarFunction, Void context) {
             List<Expression> newChildrenWithoutCast = scalarFunction.children().stream()
                     .map(child -> {
@@ -628,16 +756,20 @@ public abstract class AbstractSelectMaterializedIndexRule {
         }
     }
 
-    protected List<NamedExpression> generateProjectsAlias(
-            List<? extends NamedExpression> oldProjects, SlotContext slotContext) {
+    protected List<NamedExpression> generateProjectsAlias(List<? extends NamedExpression> oldProjects,
+            SlotContext slotContext) {
         return oldProjects.stream().map(e -> {
+            Expression real = e;
+            if (real instanceof Alias) {
+                real = real.child(0);
+            }
             if (slotContext.baseSlotToMvSlot.containsKey(e.toSlot())) {
                 return new Alias(e.getExprId(), slotContext.baseSlotToMvSlot.get(e.toSlot()), e.getName());
             }
-            if (slotContext.mvNameToMvSlot.containsKey(e.toSql())) {
-                return new Alias(e.getExprId(), slotContext.mvNameToMvSlot.get(e.toSql()), e.getName());
+            if (slotContext.mvNameToMvSlot.containsKey(real.toSql())) {
+                return new Alias(e.getExprId(), slotContext.mvNameToMvSlot.get(real.toSql()), e.getName());
             }
-            return e;
+            return e.toSlot();
         }).collect(ImmutableList.toImmutableList());
     }
 }

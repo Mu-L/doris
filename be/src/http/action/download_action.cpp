@@ -17,9 +17,7 @@
 
 #include "http/action/download_action.h"
 
-#include <algorithm>
 #include <memory>
-#include <sstream>
 #include <string>
 #include <utility>
 
@@ -33,14 +31,22 @@
 #include "runtime/exec_env.h"
 
 namespace doris {
-
+namespace {
 const std::string FILE_PARAMETER = "file";
 const std::string TOKEN_PARAMETER = "token";
+const std::string CHANNEL_PARAMETER = "channel";
+const std::string CHANNEL_INGEST_BINLOG_TYPE = "ingest_binlog";
+const std::string ACQUIRE_MD5_PARAMETER = "acquire_md5";
+} // namespace
 
-DownloadAction::DownloadAction(ExecEnv* exec_env, const std::vector<std::string>& allow_dirs,
-                               int32_t num_workers)
-        : _exec_env(exec_env), _download_type(NORMAL), _num_workers(num_workers) {
-    for (auto& dir : allow_dirs) {
+DownloadAction::DownloadAction(ExecEnv* exec_env,
+                               std::shared_ptr<bufferevent_rate_limit_group> rate_limit_group,
+                               const std::vector<std::string>& allow_dirs, int32_t num_workers)
+        : HttpHandlerWithAuth(exec_env),
+          _download_type(NORMAL),
+          _num_workers(num_workers),
+          _rate_limit_group(std::move(rate_limit_group)) {
+    for (const auto& dir : allow_dirs) {
         std::string p;
         Status st = io::global_local_filesystem()->canonicalize(dir, &p);
         if (!st.ok()) {
@@ -50,16 +56,19 @@ DownloadAction::DownloadAction(ExecEnv* exec_env, const std::vector<std::string>
     }
     if (_num_workers > 0) {
         // for single-replica-load
-        ThreadPoolBuilder("DownloadThreadPool")
-                .set_min_threads(num_workers)
-                .set_max_threads(num_workers)
-                .build(&_download_workers);
+        static_cast<void>(ThreadPoolBuilder("DownloadThreadPool")
+                                  .set_min_threads(num_workers)
+                                  .set_max_threads(num_workers)
+                                  .build(&_download_workers));
     }
 }
 
 DownloadAction::DownloadAction(ExecEnv* exec_env, const std::string& error_log_root_dir)
-        : _exec_env(exec_env), _download_type(ERROR_LOG), _num_workers(0) {
-    io::global_local_filesystem()->canonicalize(error_log_root_dir, &_error_log_root_dir);
+        : HttpHandlerWithAuth(exec_env), _download_type(ERROR_LOG), _num_workers(0) {
+#ifndef BE_TEST
+    static_cast<void>(
+            io::global_local_filesystem()->canonicalize(error_log_root_dir, &_error_log_root_dir));
+#endif
 }
 
 void DownloadAction::handle_normal(HttpRequest* req, const std::string& file_param) {
@@ -104,7 +113,11 @@ void DownloadAction::handle_normal(HttpRequest* req, const std::string& file_par
     if (is_dir) {
         do_dir_response(file_param, req);
     } else {
-        do_file_response(file_param, req);
+        const auto& channel = req->param(CHANNEL_PARAMETER);
+        bool ingest_binlog = (channel == CHANNEL_INGEST_BINLOG_TYPE);
+        bool is_acquire_md5 = !req->param(ACQUIRE_MD5_PARAMETER).empty();
+        auto* rate_limit_group = ingest_binlog ? _rate_limit_group.get() : nullptr;
+        do_file_response(file_param, req, rate_limit_group, is_acquire_md5);
     }
 }
 
@@ -186,8 +199,10 @@ Status DownloadAction::check_token(HttpRequest* req) {
         return Status::NotAuthorized("token is not specified.");
     }
 
-    if (token_str != _exec_env->token()) {
-        return Status::NotAuthorized("invalid token.");
+    const std::string& local_token = _exec_env->token();
+    if (token_str != local_token) {
+        LOG(WARNING) << "invalid download token: " << token_str << ", local token: " << local_token;
+        return Status::NotAuthorized("invalid token {}", token_str);
     }
 
     return Status::OK();

@@ -17,15 +17,17 @@
 
 package org.apache.doris.system;
 
+import org.apache.doris.common.Config;
+import org.apache.doris.qe.SimpleScheduler;
 import org.apache.doris.resource.Tag;
 import org.apache.doris.thrift.TStorageMedium;
 
-import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.Sets;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -36,6 +38,7 @@ import java.util.stream.Collectors;
  */
 public class BeSelectionPolicy {
     private static final Logger LOG = LogManager.getLogger(BeSelectionPolicy.class);
+
     public boolean needScheduleAvailable = false;
     public boolean needQueryAvailable = false;
     public boolean needLoadAvailable = false;
@@ -51,7 +54,14 @@ public class BeSelectionPolicy {
     public boolean preferComputeNode = false;
     public int expectBeNum = 0;
 
+    public boolean enableRoundRobin = false;
+    // if enable round robin, choose next be from nextRoundRobinIndex
+    // call SystemInfoService::selectBackendIdsByPolicy will update nextRoundRobinIndex
+    public int nextRoundRobinIndex = -1;
+
     public List<String> preferredLocations = new ArrayList<>();
+
+    public boolean requireAliveBe = false;
 
     private BeSelectionPolicy() {
 
@@ -114,6 +124,21 @@ public class BeSelectionPolicy {
             return this;
         }
 
+        public Builder setEnableRoundRobin(boolean enableRoundRobin) {
+            policy.enableRoundRobin = enableRoundRobin;
+            return this;
+        }
+
+        public Builder setNextRoundRobinIndex(int nextRoundRobinIndex) {
+            policy.nextRoundRobinIndex = nextRoundRobinIndex;
+            return this;
+        }
+
+        public Builder setRequireAliveBe() {
+            policy.requireAliveBe = true;
+            return this;
+        }
+
         public BeSelectionPolicy build() {
             return policy;
         }
@@ -128,10 +153,12 @@ public class BeSelectionPolicy {
             return false;
         }
 
-        if (needScheduleAvailable && !backend.isScheduleAvailable() || needQueryAvailable && !backend.isQueryAvailable()
-                || needLoadAvailable && !backend.isLoadAvailable() || !resourceTags.isEmpty() && !resourceTags.contains(
-                backend.getLocationTag()) || storageMedium != null && !backend.hasSpecifiedStorageMedium(
-                storageMedium)) {
+        if (needScheduleAvailable && !backend.isScheduleAvailable()
+                || needQueryAvailable && !backend.isQueryAvailable()
+                || needLoadAvailable && !backend.isLoadAvailable()
+                || (!resourceTags.isEmpty() && !resourceTags.contains(backend.getLocationTag()))
+                || storageMedium != null && !backend.hasSpecifiedStorageMedium(storageMedium)
+                || (requireAliveBe && !backend.isAlive())) {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Backend [{}] is not match by Other rules, policy: [{}]", backend.getHost(), this);
             }
@@ -157,7 +184,7 @@ public class BeSelectionPolicy {
         return true;
     }
 
-    public List<Backend> getCandidateBackends(ImmutableCollection<Backend> backends) {
+    public List<Backend> getCandidateBackends(Collection<Backend> backends) {
         List<Backend> filterBackends = backends.stream().filter(this::isMatch).collect(Collectors.toList());
         List<Backend> preLocationFilterBackends = filterBackends.stream()
                 .filter(iterm -> preferredLocations.contains(iterm.getHost())).collect(Collectors.toList());
@@ -166,8 +193,10 @@ public class BeSelectionPolicy {
             filterBackends = preLocationFilterBackends;
         }
         Collections.shuffle(filterBackends);
+        int numComputeNode = filterBackends.stream().filter(Backend::isComputeNode).collect(Collectors.toList()).size();
         List<Backend> candidates = new ArrayList<>();
-        if (preferComputeNode) {
+        if (preferComputeNode && numComputeNode > 0) {
+            int realExpectBeNum = expectBeNum == -1 ? numComputeNode : expectBeNum;
             int num = 0;
             // pick compute node first
             for (Backend backend : filterBackends) {
@@ -177,10 +206,10 @@ public class BeSelectionPolicy {
                 }
             }
             // fill with some mix node.
-            if (num < expectBeNum) {
+            if (num < realExpectBeNum) {
                 for (Backend backend : filterBackends) {
                     if (backend.isMixNode()) {
-                        if (num >= expectBeNum) {
+                        if (num >= realExpectBeNum) {
                             break;
                         }
                         candidates.add(backend);
@@ -190,6 +219,10 @@ public class BeSelectionPolicy {
             }
         } else {
             candidates.addAll(filterBackends);
+        }
+        // filter out backends in black list
+        if (!Config.disable_backend_black_list) {
+            candidates = candidates.stream().filter(b -> SimpleScheduler.isAvailable(b)).collect(Collectors.toList());
         }
         Collections.shuffle(candidates);
         return candidates;

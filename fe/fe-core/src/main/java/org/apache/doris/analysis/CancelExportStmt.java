@@ -18,7 +18,6 @@
 package org.apache.doris.analysis;
 
 import org.apache.doris.analysis.BinaryPredicate.Operator;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.UserException;
 import org.apache.doris.load.ExportJobState;
@@ -34,7 +33,7 @@ import lombok.Getter;
  *     CANCEL EXPORT [FROM db]
  *     WHERE [LABEL = "export_label" | LABEL like "label_pattern" | STATE = "PENDING/IN_QUEUE/EXPORTING"]
  **/
-public class CancelExportStmt extends DdlStmt {
+public class CancelExportStmt extends DdlStmt implements NotFallbackInParser {
 
     private static final ImmutableSet<String> SUPPORT_COLUMNS = new ImmutableSet.Builder<String>()
             .add("label")
@@ -57,6 +56,15 @@ public class CancelExportStmt extends DdlStmt {
     public CancelExportStmt(String dbName, Expr whereClause) {
         this.dbName = dbName;
         this.whereClause = whereClause;
+    }
+
+    public CancelExportStmt(String dbName, Expr whereClause, String label, CompoundPredicate.Operator operator,
+                            String state) {
+        this.dbName = dbName;
+        this.whereClause = whereClause;
+        this.label = label;
+        this.operator = operator;
+        this.state = state;
     }
 
     private void checkColumn(Expr expr, boolean like) throws AnalysisException {
@@ -136,8 +144,6 @@ public class CancelExportStmt extends DdlStmt {
             if (Strings.isNullOrEmpty(dbName)) {
                 throw new AnalysisException("No database selected");
             }
-        } else {
-            dbName = ClusterNamespace.getFullName(getClusterName(), dbName);
         }
 
         if (null == whereClause) {
@@ -170,6 +176,11 @@ public class CancelExportStmt extends DdlStmt {
     @Override
     public String toString() {
         return toSql();
+    }
+
+    @Override
+    public StmtType stmtType() {
+        return StmtType.CANCEL;
     }
 
 }

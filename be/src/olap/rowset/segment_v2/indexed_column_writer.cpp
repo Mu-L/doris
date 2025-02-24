@@ -91,6 +91,15 @@ Status IndexedColumnWriter::add(const void* value) {
     size_t num_to_write = 1;
     RETURN_IF_ERROR(
             _data_page_builder->add(reinterpret_cast<const uint8_t*>(value), &num_to_write));
+    CHECK(num_to_write == 1 || num_to_write == 0);
+    if (num_to_write == 0) {
+        CHECK(_data_page_builder->is_page_full());
+        // current page is already full, we need to first flush the current page,
+        // and then add the value to the new page
+        size_t num_val;
+        RETURN_IF_ERROR(_finish_current_data_page(num_val));
+        return add(value);
+    }
     _num_values++;
     size_t num_val;
     if (_data_page_builder->is_page_full()) {
@@ -108,8 +117,9 @@ Status IndexedColumnWriter::_finish_current_data_page(size_t& num_val) {
     ordinal_t first_ordinal = _num_values - num_values_in_page;
 
     // IndexedColumn doesn't have NULLs, thus data page body only contains encoded values
-    OwnedSlice page_body = _data_page_builder->finish();
-    _data_page_builder->reset();
+    OwnedSlice page_body;
+    RETURN_IF_ERROR(_data_page_builder->finish(&page_body));
+    RETURN_IF_ERROR(_data_page_builder->reset());
 
     PageFooterPB footer;
     footer.set_type(DATA_PAGE);

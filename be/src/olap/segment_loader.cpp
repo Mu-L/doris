@@ -17,79 +17,95 @@
 
 #include "olap/segment_loader.h"
 
+#include <butil/time.h>
+
 #include "common/config.h"
+#include "common/status.h"
 #include "olap/olap_define.h"
 #include "olap/rowset/beta_rowset.h"
 #include "util/stopwatch.hpp"
 
 namespace doris {
 
-SegmentLoader* SegmentLoader::_s_instance = nullptr;
-
-void SegmentLoader::create_global_instance(size_t capacity) {
-    DCHECK(_s_instance == nullptr);
-    static SegmentLoader instance(capacity);
-    _s_instance = &instance;
+SegmentLoader* SegmentLoader::instance() {
+    return ExecEnv::GetInstance()->segment_loader();
 }
 
 bool SegmentCache::lookup(const SegmentCache::CacheKey& key, SegmentCacheHandle* handle) {
-    auto lru_handle = _cache->lookup(key.encode());
+    auto* lru_handle = LRUCachePolicy::lookup(key.encode());
     if (lru_handle == nullptr) {
         return false;
     }
-    handle->init(_cache.get(), lru_handle);
+    handle->push_segment(this, lru_handle);
     return true;
 }
 
 void SegmentCache::insert(const SegmentCache::CacheKey& key, SegmentCache::CacheValue& value,
                           SegmentCacheHandle* handle) {
-    auto deleter = [](const doris::CacheKey& key, void* value) {
-        SegmentCache::CacheValue* cache_value = (SegmentCache::CacheValue*)value;
-        cache_value->segments.clear();
-        delete cache_value;
-    };
-
-    int64_t meta_mem_usage = 0;
-    for (auto segment : value.segments) {
-        meta_mem_usage += segment->meta_mem_usage();
-    }
-
-    auto lru_handle = _cache->insert(key.encode(), &value, sizeof(SegmentCache::CacheValue),
-                                     deleter, CachePriority::NORMAL, meta_mem_usage);
-    handle->init(_cache.get(), lru_handle);
+    auto* lru_handle =
+            LRUCachePolicy::insert(key.encode(), &value, value.segment->meta_mem_usage(),
+                                   value.segment->meta_mem_usage(), CachePriority::NORMAL);
+    handle->push_segment(this, lru_handle);
 }
 
 void SegmentCache::erase(const SegmentCache::CacheKey& key) {
-    _cache->erase(key.encode());
+    LRUCachePolicy::erase(key.encode());
 }
 
-Status SegmentLoader::load_segments(const BetaRowsetSharedPtr& rowset,
-                                    SegmentCacheHandle* cache_handle, bool use_cache) {
-    if (cache_handle->is_inited()) {
-        return Status::OK();
+Status SegmentLoader::load_segment(const BetaRowsetSharedPtr& rowset, int64_t segment_id,
+                                   SegmentCacheHandle* cache_handle, bool use_cache,
+                                   bool need_load_pk_index_and_bf,
+                                   OlapReaderStatistics* index_load_stats) {
+    SegmentCache::CacheKey cache_key(rowset->rowset_id(), segment_id);
+    if (_segment_cache->lookup(cache_key, cache_handle)) {
+        // Has to check the segment status here, because the segment in cache may has something wrong during
+        // load index or create column reader.
+        // Not merge this if logic with previous to make the logic more clear.
+        if (cache_handle->pop_unhealthy_segment() == nullptr) {
+            return Status::OK();
+        }
     }
-
-    SegmentCache::CacheKey cache_key(rowset->rowset_id());
-    if (!config::disable_segment_cache && _segment_cache->lookup(cache_key, cache_handle)) {
-        return Status::OK();
+    // If the segment is not healthy, then will create a new segment and will replace the unhealthy one in SegmentCache.
+    segment_v2::SegmentSharedPtr segment;
+    RETURN_IF_ERROR(rowset->load_segment(segment_id, &segment));
+    if (need_load_pk_index_and_bf) {
+        RETURN_IF_ERROR(segment->load_pk_index_and_bf(index_load_stats));
     }
-
-    std::vector<segment_v2::SegmentSharedPtr> segments;
-    RETURN_IF_ERROR(rowset->load_segments(&segments));
-
     if (use_cache && !config::disable_segment_cache) {
         // memory of SegmentCache::CacheValue will be handled by SegmentCache
-        SegmentCache::CacheValue* cache_value = new SegmentCache::CacheValue();
-        cache_value->segments = std::move(segments);
+        auto* cache_value = new SegmentCache::CacheValue(segment);
+        _cache_mem_usage += segment->meta_mem_usage();
         _segment_cache->insert(cache_key, *cache_value, cache_handle);
     } else {
-        cache_handle->init(std::move(segments));
+        cache_handle->push_segment(std::move(segment));
     }
+
     return Status::OK();
 }
 
-void SegmentLoader::erase_segments(const SegmentCache::CacheKey& key) {
+Status SegmentLoader::load_segments(const BetaRowsetSharedPtr& rowset,
+                                    SegmentCacheHandle* cache_handle, bool use_cache,
+                                    bool need_load_pk_index_and_bf,
+                                    OlapReaderStatistics* index_load_stats) {
+    if (cache_handle->is_inited()) {
+        return Status::OK();
+    }
+    for (int64_t i = 0; i < rowset->num_segments(); i++) {
+        RETURN_IF_ERROR(load_segment(rowset, i, cache_handle, use_cache, need_load_pk_index_and_bf,
+                                     index_load_stats));
+    }
+    cache_handle->set_inited();
+    return Status::OK();
+}
+
+void SegmentLoader::erase_segment(const SegmentCache::CacheKey& key) {
     _segment_cache->erase(key);
+}
+
+void SegmentLoader::erase_segments(const RowsetId& rowset_id, int64_t num_segments) {
+    for (int64_t i = 0; i < num_segments; i++) {
+        erase_segment(SegmentCache::CacheKey(rowset_id, i));
+    }
 }
 
 } // namespace doris

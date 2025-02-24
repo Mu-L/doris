@@ -17,6 +17,9 @@
 
 package org.apache.doris.nereids.trees.expressions.functions;
 
+import org.apache.doris.common.Pair;
+import org.apache.doris.nereids.trees.expressions.Expression;
+
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -25,10 +28,12 @@ import java.util.List;
  * This class used to build BoundFunction(Builtin or Combinator) by a list of Expressions.
  */
 public abstract class FunctionBuilder {
+    public abstract Class<? extends BoundFunction> functionClass();
+
     /** check whether arguments can apply to the constructor */
     public abstract boolean canApply(List<? extends Object> arguments);
 
-    public final BoundFunction build(String name, Object argument) {
+    public final Pair<? extends Expression, ? extends BoundFunction> build(String name, Object argument) {
         return build(name, ImmutableList.of(argument));
     }
 
@@ -36,7 +41,15 @@ public abstract class FunctionBuilder {
      * build a BoundFunction by function name and arguments.
      * @param name function name which in the sql expression
      * @param arguments the function's argument expressions
-     * @return the concrete bound function instance
+     * @return the concrete bound function instance,
+     *          key: the final result expression that should return, e.g. the function wrapped some cast function,
+     *          value: the real BoundFunction
      */
-    public abstract BoundFunction build(String name, List<? extends Object> arguments);
+    public abstract Pair<? extends Expression, ? extends BoundFunction> build(
+            String name, List<? extends Object> arguments);
+
+    /**
+     * return the parameters string for display candidate functions, for example: `(int, decimal, varchar)`
+     */
+    public abstract String parameterDisplayString();
 }

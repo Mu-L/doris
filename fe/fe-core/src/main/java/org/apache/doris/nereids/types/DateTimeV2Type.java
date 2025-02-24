@@ -20,11 +20,15 @@ package org.apache.doris.nereids.types;
 import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.nereids.exceptions.AnalysisException;
+import org.apache.doris.nereids.trees.expressions.literal.DateTimeLiteral;
 import org.apache.doris.nereids.types.coercion.DateLikeType;
 import org.apache.doris.nereids.types.coercion.IntegralType;
 
 import com.google.common.base.Preconditions;
 
+import java.time.DateTimeException;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 /**
@@ -71,7 +75,8 @@ public class DateTimeV2Type extends DateLikeType {
         if (dataType instanceof DateTimeV2Type) {
             return (DateTimeV2Type) dataType;
         }
-        if (dataType instanceof IntegralType || dataType instanceof BooleanType || dataType instanceof NullType) {
+        if (dataType instanceof IntegralType || dataType instanceof BooleanType
+                || dataType instanceof NullType || dataType instanceof DateTimeType) {
             return SYSTEM_DEFAULT;
         }
         return MAX;
@@ -79,13 +84,14 @@ public class DateTimeV2Type extends DateLikeType {
 
     /**
      * return proper type of datetimev2 for String
-     * may be we need to check for validity?
+     * maybe we need to check for validity?
      */
     public static DateTimeV2Type forTypeFromString(String s) {
-        if (!s.contains(".")) {
-            return DateTimeV2Type.SYSTEM_DEFAULT;
+        int scale = DateTimeLiteral.determineScale(s);
+        if (scale > MAX_SCALE) {
+            scale = MAX_SCALE;
         }
-        return DateTimeV2Type.of(s.length() - s.lastIndexOf(".") - 1);
+        return DateTimeV2Type.of(scale);
     }
 
     @Override
@@ -125,5 +131,22 @@ public class DateTimeV2Type extends DateLikeType {
 
     public int getScale() {
         return scale;
+    }
+
+    @Override
+    public double rangeLength(double high, double low) {
+        if (high == low) {
+            return 0;
+        }
+        if (Double.isInfinite(high) || Double.isInfinite(low)) {
+            return Double.POSITIVE_INFINITY;
+        }
+        try {
+            LocalDateTime to = toLocalDateTime(high);
+            LocalDateTime from = toLocalDateTime(low);
+            return ChronoUnit.SECONDS.between(from, to);
+        } catch (DateTimeException e) {
+            return Double.POSITIVE_INFINITY;
+        }
     }
 }

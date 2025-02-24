@@ -14,8 +14,10 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+#pragma once
 
 #include <gen_cpp/HeartbeatService_types.h>
+#include <gen_cpp/Types_types.h>
 
 #include <ctime>
 
@@ -25,6 +27,11 @@ struct FrontendInfo {
     TFrontendInfo info;
     std::time_t first_receiving_time_ms;
     std::time_t last_reveiving_time_ms;
+};
+
+struct FrontendAddrAndRunningQueries {
+    TNetworkAddress frontend_addr;
+    std::set<TUniqueId> running_queries;
 };
 
 } // namespace doris
