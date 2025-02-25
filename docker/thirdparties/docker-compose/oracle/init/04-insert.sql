@@ -80,4 +80,79 @@ insert into doris_test.test_clob values (10010, 'liantong');
 
 insert into doris_test."AA/D" values (1, 'alice', 20, 99.5);
 insert into doris_test.aaad values (1, 'alice');
+
+insert into doris_test."student2" values (1, 'alice', 20, 99.5);
+insert into doris_test."student2" values (2, 'bob', 21, 90.5);
+insert into doris_test."student2" values (3, 'jerry', 23, 88.0);
+insert into doris_test."student2" values (4, 'andy', 21, 93);
+
+insert into doris_test."student3" values(1, 'doris', 3, 1.0);
+
+insert into doris_test.test_all_types values
+(1, 111, 123, 7456123.89, 573, 34, 673.43, 34.1264, 56.2, 23.231,
+99, 9999, 999999999, 999999999999999999, 999, 99999, 9999999999, 9999999999999999999,
+'1', 'china', 'beijing', 'alice', 'abcdefghrjkmnopq',
+123.45, 12345, 0.0012345,
+to_date('2022-1-21 5:23:01','yyyy-mm-dd hh24:mi:ss'), to_timestamp('20191112203357.999', 'yyyymmddhh24miss.ff'), to_timestamp('20191112203357.999997623', 'yyyymmddhh24miss.ff'), to_timestamp_tz('20191112203357.999996623', 'yyyymmddhh24miss.ff'), to_timestamp_tz('20191112203357.999996623', 'yyyymmddhh24miss.ff'), interval '223-9' year(3) to month, interval '12 10:23:01.1234568' day to second 
+);
+insert into doris_test.test_all_types values
+(2, null, null, null, null, null, null, null, null, null,
+null, null, null, null, null, null, null, null,
+null, null, null, null, null,
+null, null, null,
+null, null, null, null, null, null, null
+);
+
+insert into doris_test.lower_test values ('DORIS', 'Doris', 'doris');
+
+INSERT INTO doris_test.extreme_test VALUES (2147483647, 9999999999999999999999999999999999999, 99999999999999999999999999999999999999, 999999.99, 2147483647, 32767, 999.99, 3.402823466E+38, 3.402823466E+38, 3.402823466E+38, 99, 9999, 999999999, 999999999999999999, 999, 99999, 9999999999, 9999999999999999999, 'Z', '北京', RPAD('A', 4000, 'A'), '深圳', RPAD('L', 4000, 'L'), 999.99, 99900, 0.0000999, TO_DATE('9999-12-31', 'YYYY-MM-DD'), TIMESTAMP '9999-12-31 23:59:59.999', TIMESTAMP '9999-12-31 23:59:59.999999', TIMESTAMP '9999-12-31 23:59:59.999999999', TIMESTAMP '9999-12-31 23:59:59.999999', INTERVAL '99-11' YEAR TO MONTH, INTERVAL '99 23:59:59.999999' DAY TO SECOND);
+INSERT INTO doris_test.extreme_test VALUES (-2147483648, -9999999999999999999999999999999999999, -99999999999999999999999999999999999999, -9999999.99, -2147483648, -32768, -999.99, -3.402823466E+38, -3.402823466E+38, -3.402823466E+38, -99, -9999, -999999999, -999999999999999999, -999, -99999, -9999999999, -9999999999999999999, 'A', '上海', 'B', '广州', 'S', -999.99, -99900, -0.0000999, TO_DATE('0001-01-01', 'YYYY-MM-DD'), TIMESTAMP '0001-01-01 00:00:00.000', TIMESTAMP '0001-01-01 00:00:00.000000', TIMESTAMP '0001-01-01 00:00:00.000000000', TIMESTAMP '0001-01-01 00:00:00.000000', INTERVAL '-99-11' YEAR TO MONTH, INTERVAL '-99 23:59:59.999999' DAY TO SECOND);
+INSERT INTO doris_test.extreme_test VALUES (0, 0, 0, 0.00, 0, 0, 0.00, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, ' ', '      ', '', '', '', 0.00, 0, 0.0000000, TO_DATE('1970-01-01', 'YYYY-MM-DD'), TIMESTAMP '1970-01-01 00:00:00.000', TIMESTAMP '1970-01-01 00:00:00.000000', TIMESTAMP '1970-01-01 00:00:00.000000000', TIMESTAMP '1970-01-01 00:00:00.000000', INTERVAL '0-0' YEAR TO MONTH, INTERVAL '0 00:00:00.000000' DAY TO SECOND);
+INSERT INTO doris_test.extreme_test VALUES (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+INSERT INTO doris_test.extreme_test_multi_block (
+    id, n1, n2, n3, n4, n5, n6, n7, n8, n9, 
+    tinyint_value1, smallint_value1, int_value1, bigint_value1,
+    tinyint_value2, smallint_value2, int_value2, bigint_value2,
+    country, city, address, name, remark,
+    num1, num2, num4,
+    t1, t2, t3, t4, t5, t6, t7
+)
+SELECT 
+    id, n1, n2, n3, n4, n5, n6, n7, n8, n9,
+    tinyint_value1, smallint_value1, int_value1, bigint_value1,
+    tinyint_value2, smallint_value2, int_value2, bigint_value2,
+    country, city, address, name, '',
+    num1, num2, num4,
+    t1, t2, t3, t4, t5, t6, t7
+FROM doris_test.extreme_test;
+
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+INSERT INTO doris_test.extreme_test_multi_block (id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, remark, num1, num2, num4, t1, t2, t3, t4, t5, t6, t7) SELECT id, n1, n2, n3, n4, n5, n6, n7, n8, n9, tinyint_value1, smallint_value1, int_value1, bigint_value1, tinyint_value2, smallint_value2, int_value2, bigint_value2, country, city, address, name, '', num1, num2, num4, t1, t2, t3, t4, t5, t6, t7 FROM doris_test.extreme_test_multi_block;
+
+INSERT INTO doris_test.extreme_test_multi_block (
+    id, n1, n2, n3, n4, n5, n6, n7, n8, n9, 
+    tinyint_value1, smallint_value1, int_value1, bigint_value1,
+    tinyint_value2, smallint_value2, int_value2, bigint_value2,
+    country, city, address, name, remark,
+    num1, num2, num4,
+    t1, t2, t3, t4, t5, t6, t7
+)
+SELECT 
+    id, n1, n2, n3, n4, n5, n6, n7, n8, n9,
+    tinyint_value1, smallint_value1, int_value1, bigint_value1,
+    tinyint_value2, smallint_value2, int_value2, bigint_value2,
+    country, city, address, name, '',
+    num1, num2, num4,
+    t1, t2, t3, t4, t5, t6, t7
+FROM doris_test.extreme_test;
+
 commit;

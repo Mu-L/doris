@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cstddef>
 #include <deque>
 #include <memory>
 #include <queue>
@@ -30,7 +31,6 @@
 #include "util/runtime_profile.h"
 #include "vec/common/sort/vsort_exec_exprs.h"
 #include "vec/core/block.h"
-#include "vec/core/block_spill_reader.h"
 #include "vec/core/field.h"
 #include "vec/core/sort_cursor.h"
 #include "vec/core/sort_description.h"
@@ -38,11 +38,14 @@
 #include "vec/utils/util.hpp"
 
 namespace doris {
+#include "common/compile_check_begin.h"
 class ObjectPool;
 class RowDescriptor;
 } // namespace doris
 
 namespace doris::vectorized {
+
+using MergeSorterQueue = SortingQueueBatch<MergeSortCursor>;
 
 // TODO: now we only use merge sort
 class MergeSorterState {
@@ -54,87 +57,51 @@ public:
             // create_empty_block should ignore invalid slots, unsorted_block
             // should be same structure with arrival block from child node
             // since block from child node may ignored these slots
-            : unsorted_block_(Block::create_unique(
+            : _unsorted_block(Block::create_unique(
                       VectorizedUtils::create_empty_block(row_desc, true /*ignore invalid slot*/))),
-              offset_(offset),
-              limit_(limit),
-              profile_(profile) {
-        external_sort_bytes_threshold_ = state->external_sort_bytes_threshold();
-        if (profile != nullptr) {
-            block_spill_profile_ = profile->create_child("BlockSpill", true, true);
-            spilled_block_count_ = ADD_COUNTER(block_spill_profile_, "BlockCount", TUnit::UNIT);
-            spilled_original_block_size_ =
-                    ADD_COUNTER(block_spill_profile_, "BlockBytes", TUnit::BYTES);
-        }
-    }
+              _offset(offset) {}
 
     ~MergeSorterState() = default;
 
-    Status add_sorted_block(Block& block);
+    void add_sorted_block(std::shared_ptr<Block> block);
 
     Status build_merge_tree(const SortDescription& sort_description);
 
-    Status merge_sort_read(doris::RuntimeState* state, doris::vectorized::Block* block, bool* eos);
+    Status merge_sort_read(doris::vectorized::Block* block, int batch_size, bool* eos);
 
     size_t data_size() const {
-        size_t size = unsorted_block_->allocated_bytes();
-        for (const auto& block : sorted_blocks_) {
-            size += block.allocated_bytes();
-        }
-        return size;
+        size_t size = _unsorted_block->bytes();
+        return size + _in_mem_sorted_bocks_size;
     }
 
-    uint64_t num_rows() const { return num_rows_; }
+    uint64_t num_rows() const { return _num_rows; }
 
-    bool is_spilled() const { return is_spilled_; }
+    std::shared_ptr<Block> last_sorted_block() { return _sorted_blocks.back(); }
 
-    const Block& last_sorted_block() const { return sorted_blocks_.back(); }
+    std::vector<std::shared_ptr<Block>>& get_sorted_block() { return _sorted_blocks; }
+    MergeSorterQueue& get_queue() { return _queue; }
+    void reset();
 
-    std::vector<Block>& get_sorted_block() { return sorted_blocks_; }
-    std::priority_queue<MergeSortCursor>& get_priority_queue() { return priority_queue_; }
-    std::vector<MergeSortCursorImpl>& get_cursors() { return cursors_; }
-
-    std::unique_ptr<Block> unsorted_block_;
+    std::unique_ptr<Block>& unsorted_block() { return _unsorted_block; }
 
 private:
-    int _calc_spill_blocks_to_merge() const;
+    Status _merge_sort_read_impl(int batch_size, doris::vectorized::Block* block, bool* eos);
 
-    void _build_merge_tree_not_spilled(const SortDescription& sort_description);
+    std::unique_ptr<Block> _unsorted_block;
+    MergeSorterQueue _queue;
+    std::vector<std::shared_ptr<Block>> _sorted_blocks;
+    size_t _in_mem_sorted_bocks_size = 0;
+    uint64_t _num_rows = 0;
 
-    Status _merge_sort_read_not_spilled(int batch_size, doris::vectorized::Block* block, bool* eos);
+    size_t _offset;
 
-    Status _merge_spilled_blocks(const SortDescription& sort_description);
-
-    Status _create_intermediate_merger(int num_blocks, const SortDescription& sort_description);
-
-    std::priority_queue<MergeSortCursor> priority_queue_;
-    std::vector<MergeSortCursorImpl> cursors_;
-    std::vector<Block> sorted_blocks_;
-    uint64_t num_rows_ = 0;
-
-    int64_t offset_;
-    int64_t limit_;
-
-    size_t avg_row_bytes_ = 0;
-    int spill_block_batch_size_ = 0;
-    int64_t external_sort_bytes_threshold_;
-
-    bool is_spilled_ = false;
-    bool init_merge_sorted_block_ = true;
-    std::deque<int64_t> spilled_sorted_block_streams_;
-    std::vector<BlockSpillReaderUPtr> spilled_block_readers_;
-    Block merge_sorted_block_;
-    std::unique_ptr<VSortedRunMerger> merger_;
-
-    RuntimeProfile* profile_;
-    RuntimeProfile* block_spill_profile_;
-    RuntimeProfile::Counter* spilled_block_count_;
-    RuntimeProfile::Counter* spilled_original_block_size_;
+    Block _merge_sorted_block;
+    std::unique_ptr<VSortedRunMerger> _merger;
 };
 
 class Sorter {
 public:
-    Sorter(VSortExecExprs& vsort_exec_exprs, int limit, int64_t offset, ObjectPool* pool,
+    Sorter(VSortExecExprs& vsort_exec_exprs, int64_t limit, int64_t offset, ObjectPool* pool,
            std::vector<bool>& is_asc_order, std::vector<bool>& nulls_first)
             : _vsort_exec_exprs(vsort_exec_exprs),
               _limit(limit),
@@ -149,6 +116,7 @@ public:
     virtual void init_profile(RuntimeProfile* runtime_profile) {
         _partial_sort_timer = ADD_TIMER(runtime_profile, "PartialSortTime");
         _merge_block_timer = ADD_TIMER(runtime_profile, "MergeBlockTime");
+        _partial_sort_counter = ADD_COUNTER(runtime_profile, "PartialSortCounter", TUnit::UNIT);
     }
 
     virtual Status append_block(Block* block) = 0;
@@ -159,25 +127,36 @@ public:
 
     virtual size_t data_size() const = 0;
 
-    virtual bool is_spilled() const { return false; }
+    virtual size_t get_reserve_mem_size(RuntimeState* state, bool eos) const { return 0; }
 
     // for topn runtime predicate
-    const SortDescription& get_sort_description() { return _sort_description; }
+    const SortDescription& get_sort_description() const { return _sort_description; }
     virtual Field get_top_value() { return Field {Field::Types::Null}; }
+
+    virtual Status merge_sort_read_for_spill(RuntimeState* state, doris::vectorized::Block* block,
+                                             int batch_size, bool* eos);
+    virtual void reset() {}
+
+    int64_t limit() const { return _limit; }
+    int64_t offset() const { return _offset; }
+
+    void set_enable_spill() { _enable_spill = true; }
 
 protected:
     Status partial_sort(Block& src_block, Block& dest_block);
 
+    bool _enable_spill = false;
     SortDescription _sort_description;
     VSortExecExprs& _vsort_exec_exprs;
-    int _limit;
+    int64_t _limit;
     int64_t _offset;
-    ObjectPool* _pool;
+    ObjectPool* _pool = nullptr;
     std::vector<bool>& _is_asc_order;
     std::vector<bool>& _nulls_first;
 
     RuntimeProfile::Counter* _partial_sort_timer = nullptr;
     RuntimeProfile::Counter* _merge_block_timer = nullptr;
+    RuntimeProfile::Counter* _partial_sort_counter = nullptr;
 
     std::priority_queue<MergeSortBlockCursor> _block_priority_queue;
     bool _materialize_sort_exprs;
@@ -187,7 +166,7 @@ class FullSorter final : public Sorter {
     ENABLE_FACTORY_CREATOR(FullSorter);
 
 public:
-    FullSorter(VSortExecExprs& vsort_exec_exprs, int limit, int64_t offset, ObjectPool* pool,
+    FullSorter(VSortExecExprs& vsort_exec_exprs, int64_t limit, int64_t offset, ObjectPool* pool,
                std::vector<bool>& is_asc_order, std::vector<bool>& nulls_first,
                const RowDescriptor& row_desc, RuntimeState* state, RuntimeProfile* profile);
 
@@ -201,26 +180,31 @@ public:
 
     size_t data_size() const override;
 
-    bool is_spilled() const override { return _state->is_spilled(); }
+    size_t get_reserve_mem_size(RuntimeState* state, bool eos) const override;
+
+    Status merge_sort_read_for_spill(RuntimeState* state, doris::vectorized::Block* block,
+                                     int batch_size, bool* eos) override;
+    void reset() override;
 
 private:
     bool _reach_limit() {
-        return _state->unsorted_block_->rows() > buffered_block_size_ ||
-               _state->unsorted_block_->bytes() > buffered_block_bytes_;
+        return _state->unsorted_block()->allocated_bytes() >= INITIAL_BUFFERED_BLOCK_BYTES;
     }
+
+    bool has_enough_capacity(Block* input_block, Block* unsorted_block) const;
 
     Status _do_sort();
 
     std::unique_ptr<MergeSorterState> _state;
 
-    static constexpr size_t INITIAL_BUFFERED_BLOCK_SIZE = 1024 * 1024;
-    static constexpr size_t INITIAL_BUFFERED_BLOCK_BYTES = 64 << 20;
+    static constexpr size_t INITIAL_BUFFERED_BLOCK_BYTES = 64 * 1024 * 1024;
 
     static constexpr size_t SPILL_BUFFERED_BLOCK_SIZE = 4 * 1024 * 1024;
     static constexpr size_t SPILL_BUFFERED_BLOCK_BYTES = 256 << 20;
 
-    size_t buffered_block_size_ = INITIAL_BUFFERED_BLOCK_SIZE;
-    size_t buffered_block_bytes_ = INITIAL_BUFFERED_BLOCK_BYTES;
+    size_t _buffered_block_size = SPILL_BUFFERED_BLOCK_SIZE;
+    size_t _buffered_block_bytes = SPILL_BUFFERED_BLOCK_BYTES;
 };
 
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

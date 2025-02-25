@@ -24,14 +24,17 @@ import org.apache.doris.nereids.properties.UnboundLogicalProperties;
 import org.apache.doris.nereids.trees.AbstractTreeNode;
 import org.apache.doris.nereids.trees.expressions.ExprId;
 import org.apache.doris.nereids.trees.expressions.Slot;
+import org.apache.doris.nereids.trees.expressions.StatementScopeIdGenerator;
+import org.apache.doris.nereids.trees.plans.TreeStringPlan.TreeStringNode;
 import org.apache.doris.nereids.util.MutableState;
-import org.apache.doris.nereids.util.MutableState.EmptyMutableState;
 import org.apache.doris.nereids.util.TreeStringUtils;
 import org.apache.doris.statistics.Statistics;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -46,22 +49,13 @@ import javax.annotation.Nullable;
  */
 public abstract class AbstractPlan extends AbstractTreeNode<Plan> implements Plan {
     public static final String FRAGMENT_ID = "fragment";
+    private static final ObjectId zeroId = new ObjectId(0);
+    protected final ObjectId id;
 
     protected final Statistics statistics;
     protected final PlanType type;
     protected final Optional<GroupExpression> groupExpression;
     protected final Supplier<LogicalProperties> logicalPropertiesSupplier;
-
-    // this field is special, because other fields in tree node is immutable, but in some scenes, mutable
-    // state is necessary. e.g. the rewrite framework need distinguish whether the plan is created by
-    // rules, the framework can set this field to a state variable to quickly judge without new big plan.
-    // we should avoid using it as much as possible, because mutable state is easy to cause bugs and
-    // difficult to locate.
-    private MutableState mutableState = EmptyMutableState.INSTANCE;
-
-    protected AbstractPlan(PlanType type, List<Plan> children) {
-        this(type, Optional.empty(), Optional.empty(), null, ImmutableList.copyOf(children));
-    }
 
     /**
      * all parameter constructor.
@@ -69,13 +63,26 @@ public abstract class AbstractPlan extends AbstractTreeNode<Plan> implements Pla
     protected AbstractPlan(PlanType type, Optional<GroupExpression> groupExpression,
             Optional<LogicalProperties> optLogicalProperties, @Nullable Statistics statistics,
             List<Plan> children) {
-        super(groupExpression, children);
+        super(children);
         this.type = Objects.requireNonNull(type, "type can not be null");
         this.groupExpression = Objects.requireNonNull(groupExpression, "groupExpression can not be null");
         Objects.requireNonNull(optLogicalProperties, "logicalProperties can not be null");
-        this.logicalPropertiesSupplier = Suppliers.memoize(() -> optLogicalProperties.orElseGet(
-                this::computeLogicalProperties));
+        this.logicalPropertiesSupplier = Suppliers.memoize(() ->
+                optLogicalProperties.orElseGet(this::computeLogicalProperties));
         this.statistics = statistics;
+        this.id = StatementScopeIdGenerator.newObjectId();
+    }
+
+    protected AbstractPlan(PlanType type, Optional<GroupExpression> groupExpression,
+            Supplier<LogicalProperties> logicalPropertiesSupplier, @Nullable Statistics statistics,
+            List<Plan> children, boolean useZeroId) {
+        super(children);
+        this.type = Objects.requireNonNull(type, "type can not be null");
+        this.groupExpression = Objects.requireNonNull(groupExpression, "groupExpression can not be null");
+        this.logicalPropertiesSupplier = logicalPropertiesSupplier;
+        this.statistics = statistics;
+        Preconditions.checkArgument(useZeroId);
+        this.id = zeroId;
     }
 
     @Override
@@ -93,7 +100,15 @@ public abstract class AbstractPlan extends AbstractTreeNode<Plan> implements Pla
 
     @Override
     public boolean canBind() {
-        return !bound() && children().stream().allMatch(Plan::bound);
+        if (bound()) {
+            return false;
+        }
+        for (Plan child : children()) {
+            if (!child.bound()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -105,16 +120,38 @@ public abstract class AbstractPlan extends AbstractTreeNode<Plan> implements Pla
     public String treeString() {
         return TreeStringUtils.treeString(this,
                 plan -> plan.toString(),
-                plan -> (List) ((Plan) plan).children(),
-                plan -> (List) ((Plan) plan).extraPlans(),
-                plan -> ((Plan) plan).displayExtraPlanFirst());
+                plan -> {
+                    if (plan instanceof TreeStringPlan) {
+                        Optional<TreeStringNode> treeStringNode = ((TreeStringPlan) plan).parseTreeStringNode();
+                        return treeStringNode.isPresent() ? ImmutableList.of(treeStringNode.get()) : ImmutableList.of();
+                    }
+                    if (plan instanceof TreeStringNode) {
+                        return (List) ((TreeStringNode) plan).children;
+                    }
+                    if (!(plan instanceof Plan)) {
+                        return ImmutableList.of();
+                    }
+                    return (List) ((Plan) plan).children();
+                },
+                plan -> {
+                    if (!(plan instanceof Plan)) {
+                        return ImmutableList.of();
+                    }
+                    return (List) ((Plan) plan).extraPlans();
+                },
+                plan -> {
+                    if (!(plan instanceof Plan)) {
+                        return false;
+                    }
+                    return ((Plan) plan).displayExtraPlanFirst();
+                });
     }
 
     /** top toJson method, can be override by specific operator */
     public JSONObject toJson() {
         JSONObject json = new JSONObject();
         json.put("PlanType", getType().toString());
-        if (this.children().size() == 0) {
+        if (this.children().isEmpty()) {
             return json;
         }
         JSONArray childrenJson = new JSONArray();
@@ -151,22 +188,46 @@ public abstract class AbstractPlan extends AbstractTreeNode<Plan> implements Pla
 
     @Override
     public LogicalProperties computeLogicalProperties() {
-        boolean hasUnboundChild = children.stream()
-                .anyMatch(child -> !child.bound());
+        boolean hasUnboundChild = false;
+        for (Plan child : children) {
+            if (!child.bound()) {
+                hasUnboundChild = true;
+                break;
+            }
+        }
+
         if (hasUnboundChild || hasUnboundExpression()) {
             return UnboundLogicalProperties.INSTANCE;
         } else {
-            return new LogicalProperties(this::computeOutput);
+            if (this instanceof DiffOutputInAsterisk) {
+                return new LogicalProperties(this::computeOutput, this::computeAsteriskOutput, this::computeDataTrait);
+            } else {
+                return new LogicalProperties(this::computeOutput, this::computeDataTrait);
+            }
         }
     }
 
-    @Override
-    public Optional<Object> getMutableState(String key) {
-        return mutableState.get(key);
+    public int getId() {
+        return id.asInt();
     }
 
-    @Override
-    public void setMutableState(String key, Object state) {
-        this.mutableState = this.mutableState.set(key, state);
+    /**
+     * ancestors in the tree
+     */
+    public List<Plan> getAncestors() {
+        List<Plan> ancestors = Lists.newArrayList();
+        ancestors.add(this);
+        Optional<Object> parent = this.getMutableState(MutableState.KEY_PARENT);
+        while (parent.isPresent()) {
+            ancestors.add((Plan) parent.get());
+            parent = ((Plan) parent.get()).getMutableState(MutableState.KEY_PARENT);
+        }
+        return ancestors;
+    }
+
+    public void updateActualRowCount(long actualRowCount) {
+        if (statistics != null) {
+            statistics.setActualRowCount(actualRowCount);
+        }
     }
 }

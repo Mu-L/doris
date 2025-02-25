@@ -25,7 +25,6 @@
 #include <memory>
 #include <sstream>
 
-// IWYU pragma: no_include <opentelemetry/common/threadlocal.h>
 #include "common/compiler_util.h" // IWYU pragma: keep
 #include "runtime/decimalv2_value.h"
 #include "runtime/define_primitive_type.h"
@@ -52,6 +51,7 @@
 
 namespace doris {
 namespace vectorized {
+#include "common/compile_check_begin.h"
 
 std::string MysqlConnInfo::debug_string() const {
     std::stringstream ss;
@@ -62,8 +62,10 @@ std::string MysqlConnInfo::debug_string() const {
 }
 
 VMysqlTableWriter::VMysqlTableWriter(const TDataSink& t_sink,
-                                     const VExprContextSPtrs& output_expr_ctxs)
-        : AsyncResultWriter(output_expr_ctxs) {
+                                     const VExprContextSPtrs& output_expr_ctxs,
+                                     std::shared_ptr<pipeline::Dependency> dep,
+                                     std::shared_ptr<pipeline::Dependency> fin_dep)
+        : AsyncResultWriter(output_expr_ctxs, dep, fin_dep) {
     const auto& t_mysql_sink = t_sink.mysql_table_sink;
     _conn_info.host = t_mysql_sink.host;
     _conn_info.port = t_mysql_sink.port;
@@ -74,7 +76,7 @@ VMysqlTableWriter::VMysqlTableWriter(const TDataSink& t_sink,
     _conn_info.charset = t_mysql_sink.charset;
 }
 
-Status VMysqlTableWriter::close() {
+Status VMysqlTableWriter::close(Status) {
     if (_mysql_conn) {
         mysql_close(_mysql_conn);
     }
@@ -110,22 +112,22 @@ Status VMysqlTableWriter::open(RuntimeState* state, RuntimeProfile* profile) {
     return Status::OK();
 }
 
-Status VMysqlTableWriter::append_block(vectorized::Block& block) {
+Status VMysqlTableWriter::write(RuntimeState* state, vectorized::Block& block) {
     Block output_block;
     RETURN_IF_ERROR(_projection_block(block, &output_block));
     auto num_rows = output_block.rows();
     for (int i = 0; i < num_rows; ++i) {
-        RETURN_IF_ERROR(insert_row(output_block, i));
+        RETURN_IF_ERROR(_insert_row(output_block, i));
     }
     return Status::OK();
 }
 
-Status VMysqlTableWriter::insert_row(vectorized::Block& block, size_t row) {
+Status VMysqlTableWriter::_insert_row(vectorized::Block& block, size_t row) {
     _insert_stmt_buffer.clear();
     fmt::format_to(_insert_stmt_buffer, "INSERT INTO {} VALUES (", _conn_info.table_name);
-    int num_columns = _vec_output_expr_ctxs.size();
+    size_t num_columns = _vec_output_expr_ctxs.size();
 
-    for (int i = 0; i < num_columns; ++i) {
+    for (size_t i = 0; i < num_columns; ++i) {
         auto& column_ptr = block.get_by_position(i).column;
         auto& type_ptr = block.get_by_position(i).type;
 
@@ -197,7 +199,7 @@ Status VMysqlTableWriter::insert_row(vectorized::Block& block, size_t row) {
         case TYPE_DECIMALV2: {
             DecimalV2Value value =
                     (DecimalV2Value)
-                            assert_cast<const vectorized::ColumnDecimal<vectorized::Decimal128>&>(
+                            assert_cast<const vectorized::ColumnDecimal<vectorized::Decimal128V2>&>(
                                     *column)
                                     .get_data()[row];
             fmt::format_to(_insert_stmt_buffer, "{}", value.to_string());
@@ -205,7 +207,8 @@ Status VMysqlTableWriter::insert_row(vectorized::Block& block, size_t row) {
         }
         case TYPE_DECIMAL32:
         case TYPE_DECIMAL64:
-        case TYPE_DECIMAL128I: {
+        case TYPE_DECIMAL128I:
+        case TYPE_DECIMAL256: {
             auto val = type_ptr->to_string(*column, row);
             fmt::format_to(_insert_stmt_buffer, "{}", val);
             break;
@@ -213,8 +216,7 @@ Status VMysqlTableWriter::insert_row(vectorized::Block& block, size_t row) {
         case TYPE_DATE:
         case TYPE_DATETIME: {
             int64_t int_val = assert_cast<const vectorized::ColumnInt64&>(*column).get_data()[row];
-            vectorized::VecDateTimeValue value =
-                    binary_cast<int64_t, doris::vectorized::VecDateTimeValue>(int_val);
+            VecDateTimeValue value = binary_cast<int64_t, doris::VecDateTimeValue>(int_val);
 
             char buf[64];
             char* pos = value.to_string(buf);
@@ -225,8 +227,8 @@ Status VMysqlTableWriter::insert_row(vectorized::Block& block, size_t row) {
         case TYPE_DATEV2: {
             uint32_t int_val =
                     assert_cast<const vectorized::ColumnUInt32&>(*column).get_data()[row];
-            vectorized::DateV2Value<DateV2ValueType> value =
-                    binary_cast<uint32_t, doris::vectorized::DateV2Value<DateV2ValueType>>(int_val);
+            DateV2Value<DateV2ValueType> value =
+                    binary_cast<uint32_t, DateV2Value<DateV2ValueType>>(int_val);
 
             char buf[64];
             char* pos = value.to_string(buf);
@@ -235,11 +237,9 @@ Status VMysqlTableWriter::insert_row(vectorized::Block& block, size_t row) {
             break;
         }
         case TYPE_DATETIMEV2: {
-            uint32_t int_val =
-                    assert_cast<const vectorized::ColumnUInt64&>(*column).get_data()[row];
-            vectorized::DateV2Value<DateTimeV2ValueType> value =
-                    binary_cast<uint64_t, doris::vectorized::DateV2Value<DateTimeV2ValueType>>(
-                            int_val);
+            auto int_val = assert_cast<const vectorized::ColumnUInt64&>(*column).get_data()[row];
+            DateV2Value<DateTimeV2ValueType> value =
+                    binary_cast<uint64_t, DateV2Value<DateTimeV2ValueType>>(int_val);
 
             char buf[64];
             char* pos = value.to_string(buf, _vec_output_expr_ctxs[i]->root()->type().scale);

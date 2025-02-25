@@ -19,6 +19,7 @@ package org.apache.doris.nereids.types;
 
 import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.Type;
+import org.apache.doris.common.Config;
 import org.apache.doris.nereids.annotation.Developing;
 import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.parser.NereidsParser;
@@ -32,14 +33,18 @@ import org.apache.doris.nereids.types.coercion.CharacterType;
 import org.apache.doris.nereids.types.coercion.IntegralType;
 import org.apache.doris.nereids.types.coercion.NumericType;
 import org.apache.doris.nereids.types.coercion.PrimitiveType;
+import org.apache.doris.qe.SessionVariable;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -111,110 +116,203 @@ public abstract class DataType {
      */
     public static DataType convertPrimitiveFromStrings(List<String> types) {
         String type = types.get(0).toLowerCase().trim();
+        DataType dataType;
         switch (type) {
-            case "bool":
             case "boolean":
-                return BooleanType.INSTANCE;
+                dataType = BooleanType.INSTANCE;
+                break;
             case "tinyint":
-                return TinyIntType.INSTANCE;
+                dataType = TinyIntType.INSTANCE;
+                break;
             case "smallint":
-                return SmallIntType.INSTANCE;
-            case "integer":
+                dataType = SmallIntType.INSTANCE;
+                break;
             case "int":
-                return IntegerType.INSTANCE;
+            case "integer":
+                dataType = IntegerType.INSTANCE;
+                break;
             case "bigint":
-                return BigIntType.INSTANCE;
+                dataType = BigIntType.INSTANCE;
+                break;
             case "largeint":
-                return LargeIntType.INSTANCE;
+                dataType = LargeIntType.INSTANCE;
+                break;
             case "float":
-                return FloatType.INSTANCE;
+                dataType = FloatType.INSTANCE;
+                break;
             case "double":
-                return DoubleType.INSTANCE;
+                dataType = DoubleType.INSTANCE;
+                break;
             case "decimal":
+                // NOTICE, maybe convert to decimalv3, so do not truc here.
                 switch (types.size()) {
                     case 1:
-                        return DecimalV2Type.CATALOG_DEFAULT;
+                        if (Config.enable_decimal_conversion) {
+                            return DecimalV3Type.createDecimalV3Type(38, 9);
+                        } else {
+                            dataType = DecimalV2Type.CATALOG_DEFAULT;
+                        }
+                        break;
                     case 2:
-                        return DecimalV2Type.createDecimalV2Type(Integer.parseInt(types.get(1)),
-                                0);
+                        dataType = DecimalV2Type.createDecimalV2TypeWithoutTruncate(
+                                Integer.parseInt(types.get(1)), 0);
+                        break;
                     case 3:
-                        return DecimalV2Type.createDecimalV2Type(Integer.parseInt(types.get(1)),
-                                Integer.parseInt(types.get(2)));
+                        dataType = DecimalV2Type.createDecimalV2TypeWithoutTruncate(
+                                Integer.parseInt(types.get(1)), Integer.parseInt(types.get(2)));
+                        break;
                     default:
                         throw new AnalysisException("Nereids do not support type: " + type);
                 }
+                break;
+            case "decimalv2":
+                // NOTICE, maybe convert to decimalv3, so do not truc here.
+                switch (types.size()) {
+                    case 1:
+                        dataType = DecimalV2Type.CATALOG_DEFAULT_NOT_CONVERSION;
+                        break;
+                    case 2:
+                        dataType = DecimalV2Type.createDecimalV2TypeWithoutTruncate(
+                                Integer.parseInt(types.get(1)), 0, false);
+                        break;
+                    case 3:
+                        dataType = DecimalV2Type.createDecimalV2TypeWithoutTruncate(
+                                Integer.parseInt(types.get(1)), Integer.parseInt(types.get(2)), false);
+                        break;
+                    default:
+                        throw new AnalysisException("Nereids do not support type: " + type);
+                }
+                break;
             case "decimalv3":
                 switch (types.size()) {
                     case 1:
-                        return DecimalV3Type.CATALOG_DEFAULT;
+                        dataType = DecimalV3Type.createDecimalV3Type(38, 9);
+                        break;
                     case 2:
-                        return DecimalV3Type.createDecimalV3Type(Integer.parseInt(types.get(1)));
+                        dataType = DecimalV3Type.createDecimalV3Type(Integer.parseInt(types.get(1)));
+                        break;
                     case 3:
-                        return DecimalV3Type.createDecimalV3Type(
+                        dataType = DecimalV3Type.createDecimalV3Type(
                                 Integer.parseInt(types.get(1)), Integer.parseInt(types.get(2)));
+                        break;
                     default:
                         throw new AnalysisException("Nereids do not support type: " + type);
                 }
+                break;
             case "text":
             case "string":
-                return StringType.INSTANCE;
+                dataType = StringType.INSTANCE;
+                break;
             case "varchar":
                 switch (types.size()) {
                     case 1:
-                        return VarcharType.SYSTEM_DEFAULT;
+                        dataType = VarcharType.SYSTEM_DEFAULT;
+                        break;
                     case 2:
-                        return VarcharType.createVarcharType(Integer.parseInt(types.get(1)));
+                        if (types.get(1).equals("*")) {
+                            dataType = VarcharType.SYSTEM_DEFAULT;
+                        } else {
+                            dataType = VarcharType.createVarcharType(Integer.parseInt(types.get(1)));
+                        }
+                        break;
                     default:
                         throw new AnalysisException("Nereids do not support type: " + type);
                 }
+                break;
             case "character":
             case "char":
                 switch (types.size()) {
                     case 1:
-                        return CharType.SYSTEM_DEFAULT;
+                        dataType = CharType.SYSTEM_DEFAULT;
+                        break;
                     case 2:
-                        return CharType.createCharType(Integer.parseInt(types.get(1)));
+                        if (types.get(1).equals("*")) {
+                            dataType = CharType.SYSTEM_DEFAULT;
+                        } else {
+                            dataType = CharType.createCharType(Integer.parseInt(types.get(1)));
+                        }
+                        break;
                     default:
                         throw new AnalysisException("Nereids do not support type: " + type);
                 }
+                break;
             case "null":
             case "null_type": // ScalarType.NULL.toSql() return "null_type", so support it
-                return NullType.INSTANCE;
+                dataType = NullType.INSTANCE;
+                break;
             case "date":
-                return DateType.INSTANCE;
+                dataType = DateType.INSTANCE;
+                break;
+            case "datev1":
+                dataType = DateType.NOT_CONVERSION;
+                break;
             case "datev2":
-                return DateV2Type.INSTANCE;
+                dataType = DateV2Type.INSTANCE;
+                break;
             case "time":
-                return TimeType.INSTANCE;
+                dataType = TimeType.INSTANCE;
+                break;
             case "datetime":
                 switch (types.size()) {
                     case 1:
-                        return DateTimeType.INSTANCE;
+                        dataType = DateTimeType.INSTANCE;
+                        break;
                     case 2:
-                        return DateTimeV2Type.of(Integer.parseInt(types.get(1)));
+                        dataType = DateTimeV2Type.of(Integer.parseInt(types.get(1)));
+                        break;
                     default:
                         throw new AnalysisException("Nereids do not support type: " + type);
                 }
+                break;
+            case "datetimev1":
+                switch (types.size()) {
+                    case 1:
+                        dataType = DateTimeType.NOT_CONVERSION;
+                        break;
+                    case 2:
+                        throw new AnalysisException("Nereids do not support datetimev1 type with precision");
+                    default:
+                        throw new AnalysisException("Nereids do not support type: " + type);
+                }
+                break;
             case "datetimev2":
                 switch (types.size()) {
                     case 1:
-                        return DateTimeV2Type.SYSTEM_DEFAULT;
+                        dataType = DateTimeV2Type.SYSTEM_DEFAULT;
+                        break;
                     case 2:
-                        return DateTimeV2Type.of(Integer.parseInt(types.get(1)));
+                        dataType = DateTimeV2Type.of(Integer.parseInt(types.get(1)));
+                        break;
                     default:
                         throw new AnalysisException("Nereids do not support type: " + type);
                 }
+                break;
             case "hll":
-                return HllType.INSTANCE;
+                dataType = HllType.INSTANCE;
+                break;
             case "bitmap":
-                return BitmapType.INSTANCE;
+                dataType = BitmapType.INSTANCE;
+                break;
             case "quantile_state":
-                return QuantileStateType.INSTANCE;
+                dataType = QuantileStateType.INSTANCE;
+                break;
             case "json":
-                return JsonType.INSTANCE;
+            case "jsonb":
+                dataType = JsonType.INSTANCE;
+                break;
+            case "ipv4":
+                dataType = IPv4Type.INSTANCE;
+                break;
+            case "ipv6":
+                dataType = IPv6Type.INSTANCE;
+                break;
+            case "variant":
+                dataType = VariantType.INSTANCE;
+                break;
             default:
                 throw new AnalysisException("Nereids do not support type: " + type);
         }
+        return dataType;
     }
 
     /**
@@ -235,64 +333,61 @@ public abstract class DataType {
      */
     @Developing // should support map, struct
     public static DataType fromCatalogType(Type type) {
-        if (type.isBoolean()) {
-            return BooleanType.INSTANCE;
-        } else if (type.getPrimitiveType() == Type.TINYINT.getPrimitiveType()) {
-            return TinyIntType.INSTANCE;
-        } else if (type.getPrimitiveType() == Type.SMALLINT.getPrimitiveType()) {
-            return SmallIntType.INSTANCE;
-        } else if (type.getPrimitiveType() == Type.INT.getPrimitiveType()) {
-            return IntegerType.INSTANCE;
-        } else if (type.getPrimitiveType() == Type.BIGINT.getPrimitiveType()) {
-            return BigIntType.INSTANCE;
-        } else if (type.getPrimitiveType() == Type.LARGEINT.getPrimitiveType()) {
-            return LargeIntType.INSTANCE;
-        } else if (type.getPrimitiveType() == Type.FLOAT.getPrimitiveType()) {
-            return FloatType.INSTANCE;
-        } else if (type.getPrimitiveType() == Type.DOUBLE.getPrimitiveType()) {
-            return DoubleType.INSTANCE;
-        } else if (type.isNull()) {
-            return NullType.INSTANCE;
-        } else if (type.isDatetimeV2()) {
-            return DateTimeV2Type.of(((ScalarType) type).getScalarScale());
-        } else if (type.isDatetime()) {
-            return DateTimeType.INSTANCE;
-        } else if (type.isDateV2()) {
-            return DateV2Type.INSTANCE;
-        } else if (type.isDateType()) {
-            return DateType.INSTANCE;
-        } else if (type.isTimeV2()) {
-            return TimeV2Type.INSTANCE;
-        } else if (type.isTime()) {
-            return TimeType.INSTANCE;
-        } else if (type.isHllType()) {
-            return HllType.INSTANCE;
-        } else if (type.isBitmapType()) {
-            return BitmapType.INSTANCE;
-        } else if (type.isQuantileStateType()) {
-            return QuantileStateType.INSTANCE;
-        } else if (type.getPrimitiveType() == org.apache.doris.catalog.PrimitiveType.CHAR) {
-            return CharType.createCharType(type.getLength());
-        } else if (type.getPrimitiveType() == org.apache.doris.catalog.PrimitiveType.VARCHAR) {
-            return VarcharType.createVarcharType(type.getLength());
-        } else if (type.getPrimitiveType() == org.apache.doris.catalog.PrimitiveType.STRING) {
-            return StringType.INSTANCE;
-        } else if (type.isDecimalV3()) {
-            ScalarType scalarType = (ScalarType) type;
-            int precision = scalarType.getScalarPrecision();
-            int scale = scalarType.getScalarScale();
-            return DecimalV3Type.createDecimalV3Type(precision, scale);
-        } else if (type.isDecimalV2()) {
-            ScalarType scalarType = (ScalarType) type;
-            int precision = scalarType.getScalarPrecision();
-            int scale = scalarType.getScalarScale();
-            return DecimalV2Type.createDecimalV2Type(precision, scale);
-        } else if (type.isJsonbType()) {
-            return JsonType.INSTANCE;
-        } else if (type.isStructType()) {
+        switch (type.getPrimitiveType()) {
+            case BOOLEAN: return BooleanType.INSTANCE;
+            case TINYINT: return TinyIntType.INSTANCE;
+            case SMALLINT: return SmallIntType.INSTANCE;
+            case INT: return IntegerType.INSTANCE;
+            case BIGINT: return BigIntType.INSTANCE;
+            case LARGEINT: return LargeIntType.INSTANCE;
+            case FLOAT: return FloatType.INSTANCE;
+            case DOUBLE: return DoubleType.INSTANCE;
+            case NULL_TYPE: return NullType.INSTANCE;
+            case DATETIMEV2: return DateTimeV2Type.of(((ScalarType) type).getScalarScale());
+            case DATETIME: return DateTimeType.INSTANCE;
+            case DATEV2: return DateV2Type.INSTANCE;
+            case DATE: return DateType.INSTANCE;
+            case TIMEV2: return TimeV2Type.INSTANCE;
+            case TIME: return TimeType.INSTANCE;
+            case HLL: return HllType.INSTANCE;
+            case BITMAP: return BitmapType.INSTANCE;
+            case QUANTILE_STATE: return QuantileStateType.INSTANCE;
+            case CHAR: return CharType.createCharType(type.getLength());
+            case VARCHAR: return VarcharType.createVarcharType(type.getLength());
+            case STRING: return StringType.INSTANCE;
+            case VARIANT: return VariantType.INSTANCE;
+            case JSONB: return JsonType.INSTANCE;
+            case IPV4: return IPv4Type.INSTANCE;
+            case IPV6: return IPv6Type.INSTANCE;
+            case AGG_STATE: {
+                org.apache.doris.catalog.AggStateType catalogType = ((org.apache.doris.catalog.AggStateType) type);
+                List<DataType> types = catalogType.getSubTypes().stream().map(DataType::fromCatalogType)
+                        .collect(Collectors.toList());
+                return new AggStateType(catalogType.getFunctionName(), types, catalogType.getSubTypeNullables());
+            }
+            case DECIMALV2: {
+                ScalarType scalarType = (ScalarType) type;
+                int precision = scalarType.getScalarPrecision();
+                int scale = scalarType.getScalarScale();
+                return DecimalV2Type.createDecimalV2Type(precision, scale);
+            }
+            case DECIMAL32:
+            case DECIMAL64:
+            case DECIMAL128:
+            case DECIMAL256: {
+                ScalarType scalarType = (ScalarType) type;
+                int precision = scalarType.getScalarPrecision();
+                int scale = scalarType.getScalarScale();
+                return DecimalV3Type.createDecimalV3TypeNoCheck(precision, scale);
+            }
+            default: {
+            }
+        }
+
+        if (type.isStructType()) {
             List<StructField> structFields = ((org.apache.doris.catalog.StructType) (type)).getFields().stream()
                     .map(cf -> new StructField(cf.getName(), fromCatalogType(cf.getType()),
-                            cf.getContainsNull(), cf.getComment()))
+                            cf.getContainsNull(), cf.getComment() == null ? "" : cf.getComment()))
                     .collect(ImmutableList.toImmutableList());
             return new StructType(structFields);
         } else if (type.isMapType()) {
@@ -301,13 +396,9 @@ public abstract class DataType {
         } else if (type.isArrayType()) {
             org.apache.doris.catalog.ArrayType arrayType = (org.apache.doris.catalog.ArrayType) type;
             return ArrayType.of(fromCatalogType(arrayType.getItemType()), arrayType.getContainsNull());
-        } else if (type.isAggStateType()) {
-            org.apache.doris.catalog.AggStateType catalogType = ((org.apache.doris.catalog.AggStateType) type);
-            List<DataType> types = catalogType.getSubTypes().stream().map(DataType::fromCatalogType)
-                    .collect(Collectors.toList());
-            return new AggStateType(catalogType.getFunctionName(), types, catalogType.getSubTypeNullables());
+        } else {
+            return UnsupportedType.INSTANCE;
         }
-        throw new AnalysisException("Nereids do not support type: " + type);
     }
 
     /**
@@ -489,6 +580,18 @@ public abstract class DataType {
         return this instanceof DateTimeV2Type;
     }
 
+    public boolean isIPv4Type() {
+        return this instanceof IPv4Type;
+    }
+
+    public boolean isIPType() {
+        return isIPv4Type() || isIPv6Type();
+    }
+
+    public boolean isIPv6Type() {
+        return this instanceof IPv6Type;
+    }
+
     public boolean isBitmapType() {
         return this instanceof BitmapType;
     }
@@ -517,12 +620,16 @@ public abstract class DataType {
         return this instanceof MapType;
     }
 
+    public boolean isVariantType() {
+        return this instanceof VariantType;
+    }
+
     public boolean isStructType() {
         return this instanceof StructType;
     }
 
     public boolean isOnlyMetricType() {
-        return isObjectType() || isComplexType() || isJsonType();
+        return isObjectType() || isComplexType() || isJsonType() || isVariantType();
     }
 
     public boolean isObjectType() {
@@ -538,6 +645,41 @@ public abstract class DataType {
             return PROMOTION_MAP.get(this.getClass()).get();
         } else {
             return this;
+        }
+    }
+
+    /**
+     * whether the param dataType is same-like type for nested in complex type
+     *  same-like type means: string-like, date-like, number type
+     */
+    public boolean isSameTypeForComplexTypeParam(DataType paramType) {
+        if (this.isArrayType() && paramType.isArrayType()) {
+            return ((ArrayType) this).getItemType()
+                    .isSameTypeForComplexTypeParam(((ArrayType) paramType).getItemType());
+        } else if (this.isMapType() && paramType.isMapType()) {
+            MapType thisMapType = (MapType) this;
+            MapType otherMapType = (MapType) paramType;
+            return thisMapType.getKeyType().isSameTypeForComplexTypeParam(otherMapType.getKeyType())
+                    && thisMapType.getValueType().isSameTypeForComplexTypeParam(otherMapType.getValueType());
+        } else if (this.isStructType() && paramType.isStructType()) {
+            StructType thisStructType = (StructType) this;
+            StructType otherStructType = (StructType) paramType;
+            if (thisStructType.getFields().size() != otherStructType.getFields().size()) {
+                return false;
+            }
+            for (int i = 0; i < thisStructType.getFields().size(); i++) {
+                if (!thisStructType.getFields().get(i).getDataType().isSameTypeForComplexTypeParam(
+                        otherStructType.getFields().get(i).getDataType())) {
+                    return false;
+                }
+            }
+            return true;
+        } else if (this.isStringLikeType() && paramType.isStringLikeType()) {
+            return true;
+        } else if (this.isDateLikeType() && paramType.isDateLikeType()) {
+            return true;
+        } else {
+            return this.isNumericType() && paramType.isNumericType();
         }
     }
 
@@ -624,5 +766,244 @@ public abstract class DataType {
             return true;
         }
         return false;
+    }
+
+    public void validateDataType() {
+        validateCatalogDataType(toCatalogDataType());
+    }
+
+    private static void validateCatalogDataType(Type catalogType) {
+        if (catalogType.exceedsMaxNestingDepth()) {
+            throw new AnalysisException(
+                    String.format("Type exceeds the maximum nesting depth of %s:\n%s",
+                            Type.MAX_NESTING_DEPTH, catalogType.toSql()));
+        }
+        if (!catalogType.isSupported()) {
+            throw new AnalysisException("Unsupported data type: " + catalogType.toSql());
+        }
+
+        if (catalogType.isScalarType()) {
+            validateScalarType((ScalarType) catalogType);
+        } else if (catalogType.isComplexType()) {
+            // now we not support array / map / struct nesting complex type
+            if (catalogType.isArrayType()) {
+                Type itemType = ((org.apache.doris.catalog.ArrayType) catalogType).getItemType();
+                if (itemType instanceof ScalarType) {
+                    validateNestedType(catalogType, (ScalarType) itemType);
+                }
+            }
+            if (catalogType.isMapType()) {
+                org.apache.doris.catalog.MapType mt =
+                        (org.apache.doris.catalog.MapType) catalogType;
+                if (mt.getKeyType() instanceof ScalarType) {
+                    validateNestedType(catalogType, (ScalarType) mt.getKeyType());
+                }
+                if (mt.getValueType() instanceof ScalarType) {
+                    validateNestedType(catalogType, (ScalarType) mt.getValueType());
+                }
+            }
+            if (catalogType.isStructType()) {
+                ArrayList<org.apache.doris.catalog.StructField> fields =
+                        ((org.apache.doris.catalog.StructType) catalogType).getFields();
+                Set<String> fieldNames = new HashSet<>();
+                for (org.apache.doris.catalog.StructField field : fields) {
+                    Type fieldType = field.getType();
+                    if (fieldType instanceof ScalarType) {
+                        validateNestedType(catalogType, (ScalarType) fieldType);
+                        if (!fieldNames.add(field.getName())) {
+                            throw new AnalysisException("Duplicate field name " + field.getName()
+                                    + " in struct " + catalogType.toSql());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void validateNestedType(Type parent, Type child) throws AnalysisException {
+        if (child.isNull()) {
+            throw new AnalysisException("Unsupported data type: " + child.toSql());
+        }
+        // check whether the sub-type is supported
+        if (!parent.supportSubType(child)) {
+            throw new AnalysisException(
+                    parent.getPrimitiveType() + " unsupported sub-type: " + child.toSql());
+        }
+        validateCatalogDataType(child);
+    }
+
+    private static void validateScalarType(ScalarType scalarType) {
+        org.apache.doris.catalog.PrimitiveType type = scalarType.getPrimitiveType();
+        // When string type length is not assigned, it needs to be assigned to 1.
+        if (scalarType.getPrimitiveType().isStringType() && !scalarType.isLengthSet()) {
+            if (scalarType.getPrimitiveType() == org.apache.doris.catalog.PrimitiveType.VARCHAR) {
+                // always set varchar length MAX_VARCHAR_LENGTH
+                scalarType.setLength(ScalarType.MAX_VARCHAR_LENGTH);
+            } else if (scalarType.getPrimitiveType() == org.apache.doris.catalog.PrimitiveType.STRING) {
+                // always set text length MAX_STRING_LENGTH
+                scalarType.setLength(ScalarType.MAX_STRING_LENGTH);
+            } else {
+                scalarType.setLength(1);
+            }
+        }
+        switch (type) {
+            case CHAR:
+            case VARCHAR: {
+                String name;
+                int maxLen;
+                if (type == org.apache.doris.catalog.PrimitiveType.VARCHAR) {
+                    name = "VARCHAR";
+                    maxLen = ScalarType.MAX_VARCHAR_LENGTH;
+                } else {
+                    name = "CHAR";
+                    maxLen = ScalarType.MAX_CHAR_LENGTH;
+                }
+                int len = scalarType.getLength();
+                // len is decided by child, when it is -1.
+
+                if (len <= 0) {
+                    throw new AnalysisException(name + " size must be > 0: " + len);
+                }
+                if (scalarType.getLength() > maxLen) {
+                    throw new AnalysisException(name + " size must be <= " + maxLen + ": " + len);
+                }
+                break;
+            }
+            case DECIMALV2: {
+                int precision = scalarType.decimalPrecision();
+                int scale = scalarType.decimalScale();
+                // precision: [1, 27]
+                if (precision < 1 || precision > ScalarType.MAX_DECIMALV2_PRECISION) {
+                    throw new AnalysisException("Precision of decimal must between 1 and 27."
+                            + " Precision was set to: " + precision + ".");
+                }
+                // scale: [0, 9]
+                if (scale < 0 || scale > ScalarType.MAX_DECIMALV2_SCALE) {
+                    throw new AnalysisException("Scale of decimal must between 0 and 9."
+                            + " Scale was set to: " + scale + ".");
+                }
+                if (precision - scale > ScalarType.MAX_DECIMALV2_PRECISION
+                        - ScalarType.MAX_DECIMALV2_SCALE) {
+                    throw new AnalysisException("Invalid decimal type with precision = " + precision
+                            + ", scale = " + scale);
+                }
+                // scale < precision
+                if (scale > precision) {
+                    throw new AnalysisException("Scale of decimal must be smaller than precision."
+                            + " Scale is " + scale + " and precision is " + precision);
+                }
+                break;
+            }
+            case DECIMAL32: {
+                int decimal32Precision = scalarType.decimalPrecision();
+                int decimal32Scale = scalarType.decimalScale();
+                if (decimal32Precision < 1
+                        || decimal32Precision > ScalarType.MAX_DECIMAL32_PRECISION) {
+                    throw new AnalysisException("Precision of decimal must between 1 and 9."
+                            + " Precision was set to: " + decimal32Precision + ".");
+                }
+                // scale >= 0
+                if (decimal32Scale < 0) {
+                    throw new AnalysisException("Scale of decimal must not be less than 0."
+                            + " Scale was set to: " + decimal32Scale + ".");
+                }
+                // scale < precision
+                if (decimal32Scale > decimal32Precision) {
+                    throw new AnalysisException(
+                            "Scale of decimal must be smaller than precision." + " Scale is "
+                                    + decimal32Scale + " and precision is " + decimal32Precision);
+                }
+                break;
+            }
+            case DECIMAL64: {
+                int decimal64Precision = scalarType.decimalPrecision();
+                int decimal64Scale = scalarType.decimalScale();
+                if (decimal64Precision < 1
+                        || decimal64Precision > ScalarType.MAX_DECIMAL64_PRECISION) {
+                    throw new AnalysisException("Precision of decimal64 must between 1 and 18."
+                            + " Precision was set to: " + decimal64Precision + ".");
+                }
+                // scale >= 0
+                if (decimal64Scale < 0) {
+                    throw new AnalysisException("Scale of decimal must not be less than 0."
+                            + " Scale was set to: " + decimal64Scale + ".");
+                }
+                // scale < precision
+                if (decimal64Scale > decimal64Precision) {
+                    throw new AnalysisException(
+                            "Scale of decimal must be smaller than precision." + " Scale is "
+                                    + decimal64Scale + " and precision is " + decimal64Precision);
+                }
+                break;
+            }
+            case DECIMAL128: {
+                int decimal128Precision = scalarType.decimalPrecision();
+                int decimal128Scale = scalarType.decimalScale();
+                if (decimal128Precision < 1
+                        || decimal128Precision > ScalarType.MAX_DECIMAL128_PRECISION) {
+                    throw new AnalysisException("Precision of decimal128 must between 1 and 38."
+                            + " Precision was set to: " + decimal128Precision + ".");
+                }
+                // scale >= 0
+                if (decimal128Scale < 0) {
+                    throw new AnalysisException("Scale of decimal must not be less than 0."
+                            + " Scale was set to: " + decimal128Scale + ".");
+                }
+                // scale < precision
+                if (decimal128Scale > decimal128Precision) {
+                    throw new AnalysisException(
+                            "Scale of decimal must be smaller than precision." + " Scale is "
+                                    + decimal128Scale + " and precision is " + decimal128Precision);
+                }
+                break;
+            }
+            case DECIMAL256: {
+                if (SessionVariable.getEnableDecimal256()) {
+                    int precision = scalarType.decimalPrecision();
+                    int scale = scalarType.decimalScale();
+                    if (precision < 1 || precision > ScalarType.MAX_DECIMAL256_PRECISION) {
+                        throw new AnalysisException("Precision of decimal256 must between 1 and 76."
+                                + " Precision was set to: " + precision + ".");
+                    }
+                    // scale >= 0
+                    if (scale < 0) {
+                        throw new AnalysisException("Scale of decimal must not be less than 0."
+                                + " Scale was set to: " + scale + ".");
+                    }
+                    // scale < precision
+                    if (scale > precision) {
+                        throw new AnalysisException(
+                                "Scale of decimal must be smaller than precision." + " Scale is "
+                                        + scale + " and precision is " + precision);
+                    }
+                    break;
+                } else {
+                    int precision = scalarType.decimalPrecision();
+                    throw new AnalysisException("Column of type Decimal256 with precision "
+                            + precision + " in not supported.");
+                }
+            }
+            case TIMEV2:
+            case DATETIMEV2: {
+                int precision = scalarType.decimalPrecision();
+                int scale = scalarType.decimalScale();
+                // precision: [1, 27]
+                if (precision != ScalarType.DATETIME_PRECISION) {
+                    throw new AnalysisException(
+                            "Precision of Datetime/Time must be " + ScalarType.DATETIME_PRECISION
+                                    + "." + " Precision was set to: " + precision + ".");
+                }
+                // scale: [0, 9]
+                if (scale < 0 || scale > 6) {
+                    throw new AnalysisException("Scale of Datetime/Time must between 0 and 6."
+                            + " Scale was set to: " + scale + ".");
+                }
+                break;
+            }
+            case INVALID_TYPE:
+                throw new AnalysisException("Invalid type.");
+            default:
+                break;
+        }
     }
 }

@@ -16,27 +16,61 @@
 // under the License.
 
 suite("test_time_function") {
-    sql """
-        set enable_nereids_planner=true,enable_fallback_to_original_planner=false
-    """
-    qt_select1 """
+    qt_select """
         select sec_to_time(time_to_sec(cast('16:32:18' as time)));
     """
-    qt_select2 """
+    qt_select """
         select sec_to_time(59538);
     """
-
-    sql """
-        set enable_nereids_planner=false
+    // "HHMMSS"
+    qt_select """
+        select cast("123456" as TIME);
     """
-
-    qt_select3 """
-        select sec_to_time(time_to_sec(cast('16:32:18' as time)));
+    qt_select """
+        select cast("3456" as TIME);    
     """
-    qt_select4 """
-        select sec_to_time(59538);
+    qt_select """
+        select cast("56" as TIME);
     """
-
-
     
+    // "HH:MM:SS"
+    qt_select """
+        select cast("12:34:56" as TIME);
+    """
+    qt_select """
+        select cast("34:56" as TIME);    
+    """
+    qt_select """
+        select cast(":56" as TIME);
+    """
+
+    // HHMMSS
+    qt_select """
+        select cast(123456 as TIME);
+    """
+    qt_select """
+        select cast(3456 as TIME);
+    """
+    qt_select """
+        select cast(56 as TIME);
+    """
+
+    // Invalid value in seconds part.
+    qt_select """
+        select cast(":61" as TIME);
+    """
+    qt_select """
+        select cast("61" as TIME);
+    """
+    qt_select """
+        select cast(61 as TIME);
+    """
+
+    qt_select """
+        select sec_to_time(time_to_sec(cast("61" as time)));
+    """
+
+    qt_select """
+        select time_to_sec(timediff('2024-01-22', '2024-01-15')) as seconds;
+    """
 }

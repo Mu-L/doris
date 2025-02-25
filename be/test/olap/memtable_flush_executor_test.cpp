@@ -40,29 +40,28 @@
 
 namespace doris {
 
-static std::unique_ptr<StorageEngine> k_engine;
-static MemTableFlushExecutor* k_flush_executor = nullptr;
-
 void set_up() {
     char buffer[1024];
     getcwd(buffer, 1024);
     config::storage_root_path = std::string(buffer) + "/flush_test";
-    EXPECT_TRUE(io::global_local_filesystem()
-                        ->delete_and_create_directory(config::storage_root_path)
-                        .ok());
+    auto st = io::global_local_filesystem()->delete_directory(config::storage_root_path);
+    ASSERT_TRUE(st.ok()) << st;
+    st = io::global_local_filesystem()->create_directory(config::storage_root_path);
+    ASSERT_TRUE(st.ok()) << st;
+
     std::vector<StorePath> paths;
     paths.emplace_back(config::storage_root_path, -1);
 
     doris::EngineOptions options;
     options.store_paths = paths;
-    Status s = doris::StorageEngine::open(options, &k_engine);
+    auto engine = std::make_unique<StorageEngine>(options);
+    Status s = engine->open();
     EXPECT_TRUE(s.ok()) << s.to_string();
-
-    k_flush_executor = k_engine->memtable_flush_executor();
+    ExecEnv::GetInstance()->set_storage_engine(std::move(engine));
 }
 
 void tear_down() {
-    k_engine.reset();
+    ExecEnv::GetInstance()->set_storage_engine(nullptr);
     system("rm -rf ./flush_test");
     EXPECT_TRUE(io::global_local_filesystem()
                         ->delete_directory(std::string(getenv("DORIS_HOME")) + "/" + UNUSED_PREFIX)
@@ -70,13 +69,16 @@ void tear_down() {
 }
 
 Schema create_schema() {
-    std::vector<TabletColumn> col_schemas;
-    col_schemas.emplace_back(FieldAggregationMethod::OLAP_FIELD_AGGREGATION_NONE,
-                             FieldType::OLAP_FIELD_TYPE_SMALLINT, true);
-    col_schemas.emplace_back(FieldAggregationMethod::OLAP_FIELD_AGGREGATION_NONE,
-                             FieldType::OLAP_FIELD_TYPE_INT, true);
-    col_schemas.emplace_back(FieldAggregationMethod::OLAP_FIELD_AGGREGATION_SUM,
-                             FieldType::OLAP_FIELD_TYPE_BIGINT, true);
+    std::vector<TabletColumnPtr> col_schemas;
+    col_schemas.emplace_back(
+            std::make_shared<TabletColumn>(FieldAggregationMethod::OLAP_FIELD_AGGREGATION_NONE,
+                                           FieldType::OLAP_FIELD_TYPE_SMALLINT, true));
+    col_schemas.emplace_back(
+            std::make_shared<TabletColumn>(FieldAggregationMethod::OLAP_FIELD_AGGREGATION_NONE,
+                                           FieldType::OLAP_FIELD_TYPE_INT, true));
+    col_schemas.emplace_back(
+            std::make_shared<TabletColumn>(FieldAggregationMethod::OLAP_FIELD_AGGREGATION_SUM,
+                                           FieldType::OLAP_FIELD_TYPE_BIGINT, true));
     Schema schema(col_schemas, 2);
     return schema;
 }

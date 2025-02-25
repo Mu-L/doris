@@ -27,7 +27,7 @@ import java.util.Objects;
 /**
  * Represents Null literal
  */
-public class NullLiteral extends Literal {
+public class NullLiteral extends Literal implements ComparableLiteral {
 
     public static final NullLiteral INSTANCE = new NullLiteral();
 
@@ -56,7 +56,15 @@ public class NullLiteral extends Literal {
 
     @Override
     public LiteralExpr toLegacyLiteral() {
-        return new org.apache.doris.analysis.NullLiteral();
+        return org.apache.doris.analysis.NullLiteral.create(dataType.toCatalogDataType());
+    }
+
+    @Override
+    public int compareTo(ComparableLiteral other) {
+        if (other instanceof NullLiteral) {
+            return 0;
+        }
+        return -1;
     }
 
     @Override
@@ -80,7 +88,7 @@ public class NullLiteral extends Literal {
     }
 
     @Override
-    public int hashCode() {
-        return Objects.hash(super.hashCode(), dataType);
+    protected int computeHashCode() {
+        return Objects.hash(super.computeHashCode(), dataType);
     }
 }

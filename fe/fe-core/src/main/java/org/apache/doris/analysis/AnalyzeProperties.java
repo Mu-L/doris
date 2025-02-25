@@ -24,13 +24,14 @@ import org.apache.doris.statistics.AnalysisInfo.AnalysisType;
 import com.google.common.collect.ImmutableSet;
 import com.google.gson.annotations.SerializedName;
 import org.apache.commons.lang3.StringUtils;
-import org.quartz.CronExpression;
+import org.apache.logging.log4j.core.util.CronExpression;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+// TODO: Remove map
 public class AnalyzeProperties {
 
     public static final String PROPERTY_SYNC = "sync";
@@ -41,6 +42,9 @@ public class AnalyzeProperties {
     public static final String PROPERTY_NUM_BUCKETS = "num.buckets";
     public static final String PROPERTY_ANALYSIS_TYPE = "analysis.type";
     public static final String PROPERTY_PERIOD_SECONDS = "period.seconds";
+    public static final String PROPERTY_FORCE_FULL = "force.full";
+    public static final String PROPERTY_EXTERNAL_TABLE_USE_SQL = "external.table.use.sql";
+    public static final String PROPERTY_USE_AUTO_ANALYZER = "use.auto.analyzer";
 
     public static final AnalyzeProperties DEFAULT_PROP = new AnalyzeProperties(new HashMap<String, String>() {
         {
@@ -67,6 +71,9 @@ public class AnalyzeProperties {
             .add(PROPERTY_ANALYSIS_TYPE)
             .add(PROPERTY_PERIOD_SECONDS)
             .add(PROPERTY_PERIOD_CRON)
+            .add(PROPERTY_FORCE_FULL)
+            .add(PROPERTY_EXTERNAL_TABLE_USE_SQL)
+            .add(PROPERTY_USE_AUTO_ANALYZER)
             .build();
 
     public AnalyzeProperties(Map<String, String> properties) {
@@ -116,6 +123,10 @@ public class AnalyzeProperties {
             return 0;
         }
         return Integer.parseInt(properties.get(PROPERTY_SAMPLE_ROWS));
+    }
+
+    public void setSampleRows(long sampleRows) {
+        properties.put(PROPERTY_SAMPLE_ROWS, String.valueOf(sampleRows));
     }
 
     public int getNumBuckets() {
@@ -262,6 +273,18 @@ public class AnalyzeProperties {
     public boolean isSample() {
         return properties.containsKey(PROPERTY_SAMPLE_PERCENT)
                 || properties.containsKey(PROPERTY_SAMPLE_ROWS);
+    }
+
+    public boolean forceFull() {
+        return properties.containsKey(PROPERTY_FORCE_FULL);
+    }
+
+    public boolean isSampleRows() {
+        return properties.containsKey(PROPERTY_SAMPLE_ROWS);
+    }
+
+    public boolean usingSqlForExternalTable() {
+        return properties.containsKey(PROPERTY_EXTERNAL_TABLE_USE_SQL);
     }
 
     public String toSQL() {

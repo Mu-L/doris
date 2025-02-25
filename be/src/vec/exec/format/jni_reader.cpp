@@ -25,6 +25,7 @@
 #include "vec/core/types.h"
 
 namespace doris {
+#include "common/compile_check_begin.h"
 class RuntimeProfile;
 class RuntimeState;
 
@@ -37,14 +38,14 @@ namespace doris::vectorized {
 
 MockJniReader::MockJniReader(const std::vector<SlotDescriptor*>& file_slot_descs,
                              RuntimeState* state, RuntimeProfile* profile)
-        : _file_slot_descs(file_slot_descs), _state(state), _profile(profile) {
+        : JniReader(file_slot_descs, state, profile) {
     std::ostringstream required_fields;
     std::ostringstream columns_types;
     std::vector<std::string> column_names;
     int index = 0;
-    for (auto& desc : _file_slot_descs) {
+    for (const auto& desc : _file_slot_descs) {
         std::string field = desc->col_name();
-        std::string type = JniConnector::get_hive_type(desc->type());
+        std::string type = JniConnector::get_jni_type(desc->type());
         column_names.emplace_back(field);
         if (index == 0) {
             required_fields << field;
@@ -63,7 +64,7 @@ MockJniReader::MockJniReader(const std::vector<SlotDescriptor*>& file_slot_descs
 }
 
 Status MockJniReader::get_next_block(Block* block, size_t* read_rows, bool* eof) {
-    RETURN_IF_ERROR(_jni_connector->get_nex_block(block, read_rows, eof));
+    RETURN_IF_ERROR(_jni_connector->get_next_block(block, read_rows, eof));
     if (*eof) {
         RETURN_IF_ERROR(_jni_connector->close());
     }
@@ -72,7 +73,7 @@ Status MockJniReader::get_next_block(Block* block, size_t* read_rows, bool* eof)
 
 Status MockJniReader::get_columns(std::unordered_map<std::string, TypeDescriptor>* name_to_type,
                                   std::unordered_set<std::string>* missing_cols) {
-    for (auto& desc : _file_slot_descs) {
+    for (const auto& desc : _file_slot_descs) {
         name_to_type->emplace(desc->col_name(), desc->type());
     }
     return Status::OK();
@@ -84,4 +85,5 @@ Status MockJniReader::init_reader(
     RETURN_IF_ERROR(_jni_connector->init(colname_to_value_range));
     return _jni_connector->open(_state, _profile);
 }
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

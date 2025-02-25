@@ -33,6 +33,14 @@ public abstract class JniScanner {
     protected VectorTable vectorTable;
     protected String[] fields;
     protected ColumnType[] types;
+    @Deprecated
+    // This predicate is from BE, but no used.
+    // TODO: actually, we can generate the predicate for JNI scanner in FE's planner,
+    // then serialize it to BE, and BE pass it to JNI scanner directly.
+    // NO need to use this intermediate expression, because each JNI scanner has its
+    // own predicate expression format.
+    // For example, Paimon use "PaimonScannerUtils.decodeStringToObject(paimonPredicate)"
+    // to deserialize the predicate string to PaimonPredicate object.
     protected ScanPredicate[] predicates;
     protected int batchSize;
 
@@ -50,11 +58,9 @@ public abstract class JniScanner {
         throw new UnsupportedOperationException();
     }
 
-    protected void initTableInfo(ColumnType[] requiredTypes, String[] requiredFields, ScanPredicate[] predicates,
-            int batchSize) {
+    protected void initTableInfo(ColumnType[] requiredTypes, String[] requiredFields, int batchSize) {
         this.types = requiredTypes;
         this.fields = requiredFields;
-        this.predicates = predicates;
         this.batchSize = batchSize;
     }
 
@@ -81,7 +87,7 @@ public abstract class JniScanner {
 
     public long getNextBatchMeta() throws IOException {
         if (vectorTable == null) {
-            vectorTable = new VectorTable(types, fields, predicates, batchSize);
+            vectorTable = VectorTable.createWritableTable(types, fields, batchSize);
         }
         int numRows;
         try {
@@ -107,7 +113,7 @@ public abstract class JniScanner {
     }
 
     private long getMetaAddress(int numRows) {
-        vectorTable.setNumRows(numRows);
+        assert (numRows == vectorTable.getNumRows());
         return vectorTable.getMetaAddress();
     }
 

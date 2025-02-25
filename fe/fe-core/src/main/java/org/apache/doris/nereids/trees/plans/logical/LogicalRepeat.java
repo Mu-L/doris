@@ -18,6 +18,7 @@
 package org.apache.doris.nereids.trees.plans.logical;
 
 import org.apache.doris.nereids.memo.GroupExpression;
+import org.apache.doris.nereids.properties.DataTrait;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
@@ -33,9 +34,11 @@ import org.apache.doris.nereids.util.Utils;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * LogicalRepeat.
@@ -154,6 +157,10 @@ public class LogicalRepeat<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_T
                 children.get(0));
     }
 
+    public LogicalRepeat<CHILD_TYPE> withGroupSets(List<List<Expression>> groupingSets) {
+        return new LogicalRepeat<>(groupingSets, outputExpressions, child());
+    }
+
     public LogicalRepeat<CHILD_TYPE> withGroupSetsAndOutput(List<List<Expression>> groupingSets,
             List<NamedExpression> outputExpressionList) {
         return new LogicalRepeat<>(groupingSets, outputExpressionList, child());
@@ -176,5 +183,35 @@ public class LogicalRepeat<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_T
     public boolean canBindVirtualSlot() {
         return bound() && outputExpressions.stream()
                 .noneMatch(output -> output.containsType(VirtualSlotReference.class));
+    }
+
+    @Override
+    public void computeUnique(DataTrait.Builder builder) {
+        // don't generate unique slot
+    }
+
+    @Override
+    public void computeUniform(DataTrait.Builder builder) {
+        // don't generate uniform slot
+        // TODO: this need be supported later
+    }
+
+    @Override
+    public void computeEqualSet(DataTrait.Builder builder) {
+        Set<Expression> common = getCommonGroupingSetExpressions();
+        Set<Slot> slots = new HashSet<>();
+        for (Expression expr : common) {
+            if (!(expr instanceof Slot)) {
+                return;
+            }
+            slots.add((Slot) expr);
+        }
+        builder.addEqualSet(child().getLogicalProperties().getTrait());
+        builder.pruneEqualSetSlots(slots);
+    }
+
+    @Override
+    public void computeFd(DataTrait.Builder builder) {
+        // don't generate fd
     }
 }

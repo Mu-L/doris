@@ -17,31 +17,29 @@
 
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
-
+#include <cstddef>
+#include <cstdint>
 #include <string>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
+#include "common/factory_creator.h"
 #include "common/status.h"
 #include "exec/olap_common.h"
 #include "table_format_reader.h"
 #include "util/runtime_profile.h"
-#include "vec/columns/column_dictionary.h"
 #include "vec/common/hash_table/phmap_fwd_decl.h"
 
 namespace doris {
+#include "common/compile_check_begin.h"
 class RuntimeState;
 class SlotDescriptor;
 class TFileRangeDesc;
 class TFileScanRangeParams;
 
 namespace io {
-class IOContext;
+struct IOContext;
 } // namespace io
 struct TypeDescriptor;
 
@@ -57,7 +55,7 @@ class TransactionalHiveReader : public TableFormatReader {
 public:
     struct AcidRowID {
         int64_t original_transaction;
-        int32_t bucket;
+        int64_t bucket;
         int64_t row_id;
 
         struct Hash {
@@ -65,7 +63,7 @@ public:
                 size_t hash_value = 0;
                 hash_value ^= std::hash<int64_t> {}(transactional_row_id.original_transaction) +
                               0x9e3779b9 + (hash_value << 6) + (hash_value >> 2);
-                hash_value ^= std::hash<int32_t> {}(transactional_row_id.bucket) + 0x9e3779b9 +
+                hash_value ^= std::hash<int64_t> {}(transactional_row_id.bucket) + 0x9e3779b9 +
                               (hash_value << 6) + (hash_value >> 2);
                 hash_value ^= std::hash<int64_t> {}(transactional_row_id.row_id) + 0x9e3779b9 +
                               (hash_value << 6) + (hash_value >> 2);
@@ -89,16 +87,9 @@ public:
                             io::IOContext* io_ctx);
     ~TransactionalHiveReader() override = default;
 
-    Status init_row_filters(const TFileRangeDesc& range) override;
+    Status init_row_filters(const TFileRangeDesc& range, io::IOContext* io_ctx) override;
 
     Status get_next_block(Block* block, size_t* read_rows, bool* eof) override;
-
-    Status set_fill_columns(
-            const std::unordered_map<std::string, std::tuple<std::string, const SlotDescriptor*>>&
-                    partition_columns,
-            const std::unordered_map<std::string, VExprContextSPtr>& missing_columns) override;
-
-    bool fill_all_columns() const override;
 
     Status get_columns(std::unordered_map<std::string, TypeDescriptor>* name_to_type,
                        std::unordered_set<std::string>* missing_cols) override;
@@ -113,21 +104,21 @@ public:
 
 private:
     struct TransactionalHiveProfile {
-        RuntimeProfile::Counter* num_delete_files;
-        RuntimeProfile::Counter* num_delete_rows;
-        RuntimeProfile::Counter* delete_files_read_time;
+        RuntimeProfile::Counter* num_delete_files = nullptr;
+        RuntimeProfile::Counter* num_delete_rows = nullptr;
+        RuntimeProfile::Counter* delete_files_read_time = nullptr;
     };
 
-    RuntimeProfile* _profile;
-    RuntimeState* _state;
+    RuntimeProfile* _profile = nullptr;
+    RuntimeState* _state = nullptr;
     const TFileScanRangeParams& _params;
     const TFileRangeDesc& _range;
     TransactionalHiveProfile _transactional_orc_profile;
     AcidRowIDSet _delete_rows;
-    std::unique_ptr<IColumn::Filter> _delete_rows_filter_ptr = nullptr;
+    std::unique_ptr<IColumn::Filter> _delete_rows_filter_ptr;
     std::vector<std::string> _col_names;
 
-    io::IOContext* _io_ctx;
+    io::IOContext* _io_ctx = nullptr;
 };
 
 inline bool operator<(const TransactionalHiveReader::AcidRowID& lhs,
@@ -144,4 +135,5 @@ inline bool operator<(const TransactionalHiveReader::AcidRowID& lhs,
 }
 
 } // namespace vectorized
+#include "common/compile_check_end.h"
 } // namespace doris

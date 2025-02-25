@@ -65,7 +65,7 @@ suite("test_array_export", "export") {
     def create_test_table = {testTablex ->
         sql """ DROP TABLE IF EXISTS ${tableName} """
 
-        result1 = sql """
+        def result1 = sql """
             CREATE TABLE IF NOT EXISTS ${tableName} (
               `k1` INT(11) NULL COMMENT "",
               `k2` ARRAY<SMALLINT> NOT NULL COMMENT "",
@@ -136,7 +136,7 @@ suite("test_array_export", "export") {
     def check_export_result = {checklabel->
         max_try_milli_secs = 15000
         while(max_try_milli_secs) {
-            result = sql "show export where label='${checklabel}'"
+            def result = sql "show export where label='${checklabel}'"
             if(result[0][2] == "FINISHED") {
                 break
             } else {
@@ -171,10 +171,10 @@ suite("test_array_export", "export") {
         } else {
             throw new IllegalStateException("""${outFilePath} already exists! """)
         }
-        result = sql """
+        def result = sql """
             SELECT * FROM ${tableName} t ORDER BY k1 INTO OUTFILE "file://${outFile}/";
         """
-        url = result[0][3]
+        def url = result[0][3]
         urlHost = url.substring(8, url.indexOf("${outFile}"))
         if (backends.size() > 1) {
             // custer will scp files
@@ -203,7 +203,7 @@ suite("test_array_export", "export") {
             path.delete();
         }
         if (csvFiles != "") {
-            cmd = "rm -rf ${csvFiles}"
+            def cmd = "rm -rf ${csvFiles}"
             sshExec("root", urlHost, cmd)
         }
     }

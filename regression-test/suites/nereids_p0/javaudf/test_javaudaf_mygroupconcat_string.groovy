@@ -27,6 +27,7 @@ suite("nereids_test_javaudaf_mygroupconcat_string") {
 
     def tableName = "test_javaudaf_mygroupconcat_string"
     def jarPath = """${context.file.parent}/../../javaudf_p0/jars/java-udf-case-jar-with-dependencies.jar"""
+    scp_udf_file_to_all_be(jarPath)
 
     log.info("Jar path: ${jarPath}".toString())
     try {
@@ -44,11 +45,11 @@ suite("nereids_test_javaudaf_mygroupconcat_string") {
         int i = 1
         for (; i < 9; i ++) {
             sb.append("""
-                (${i % 3}, '${i}','abcdefg${i}','poiuytre${i}abcdefg'),
+                (${i % 3}, '${i}','abcdefg','poiuytreabcdefg'),
             """)
         }
         sb.append("""
-                (${i}, '${i}','abcdefg${i}','poiuytre${i}abcdefg')
+                (${i}, '${i}','abcdefg','poiuytreabcdefg')
             """)
         sql """ INSERT INTO ${tableName} VALUES
              ${sb.toString()}

@@ -24,14 +24,12 @@ import org.apache.doris.catalog.Partition;
 import org.apache.doris.catalog.Table;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Config;
-import org.apache.doris.common.DdlException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
 import org.apache.doris.common.FeNameFormat;
 import org.apache.doris.common.UserException;
 import org.apache.doris.common.util.PrintableMap;
 import org.apache.doris.common.util.PropertyAnalyzer;
-import org.apache.doris.common.util.URI;
 import org.apache.doris.common.util.Util;
 import org.apache.doris.load.ExportJob;
 import org.apache.doris.mysql.privilege.PrivPredicate;
@@ -42,16 +40,16 @@ import org.apache.doris.qe.VariableMgr;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
-import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import lombok.Getter;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 // EXPORT statement, export data to dirs by broker.
 //
@@ -59,34 +57,36 @@ import java.util.stream.Collectors;
 //      EXPORT TABLE table_name [PARTITION (name1[, ...])]
 //          TO 'export_target_path'
 //          [PROPERTIES("key"="value")]
-//          BY BROKER 'broker_name' [( $broker_attrs)]
+//          WITH BROKER 'broker_name' [( $broker_attrs)]
 @Getter
-public class ExportStmt extends StatementBase {
+public class ExportStmt extends StatementBase implements NotFallbackInParser {
     public static final String PARALLELISM = "parallelism";
     public static final String LABEL = "label";
+    public static final String DATA_CONSISTENCY = "data_consistency";
+    public static final String COMPRESS_TYPE = "compress_type";
 
     private static final String DEFAULT_COLUMN_SEPARATOR = "\t";
     private static final String DEFAULT_LINE_DELIMITER = "\n";
     private static final String DEFAULT_PARALLELISM = "1";
+    private static final Integer DEFAULT_TIMEOUT = 7200;
 
     private static final ImmutableSet<String> PROPERTIES_SET = new ImmutableSet.Builder<String>()
             .add(LABEL)
             .add(PARALLELISM)
-            .add(LoadStmt.EXEC_MEM_LIMIT)
-            .add(LoadStmt.TIMEOUT_PROPERTY)
+            .add(DATA_CONSISTENCY)
             .add(LoadStmt.KEY_IN_PARAM_COLUMNS)
-            .add(LoadStmt.TIMEOUT_PROPERTY)
             .add(OutFileClause.PROP_MAX_FILE_SIZE)
             .add(OutFileClause.PROP_DELETE_EXISTING_FILES)
             .add(PropertyAnalyzer.PROPERTIES_COLUMN_SEPARATOR)
             .add(PropertyAnalyzer.PROPERTIES_LINE_DELIMITER)
+            .add(PropertyAnalyzer.PROPERTIES_TIMEOUT)
             .add("format")
+            .add(COMPRESS_TYPE)
             .build();
 
     private TableName tblName;
     private List<String> partitionStringNames;
     private Expr whereExpr;
-    private String whereSql;
     private String path;
     private BrokerDesc brokerDesc;
     private Map<String, String> properties = Maps.newHashMap();
@@ -102,8 +102,13 @@ public class ExportStmt extends StatementBase {
 
     private Integer parallelism;
 
+    private Integer timeout;
+
     private String maxFileSize;
     private String deleteExistingFiles;
+    private String withBom;
+    private String dataConsistency = ExportJob.CONSISTENT_PARTITION;
+    private String compressionType;
     private SessionVariable sessionVariables;
 
     private String qualifiedUser;
@@ -123,19 +128,14 @@ public class ExportStmt extends StatementBase {
         this.brokerDesc = brokerDesc;
         this.columnSeparator = DEFAULT_COLUMN_SEPARATOR;
         this.lineDelimiter = DEFAULT_LINE_DELIMITER;
+        this.timeout = DEFAULT_TIMEOUT;
 
-        Optional<SessionVariable> optionalSessionVariable = Optional.ofNullable(
-                ConnectContext.get().getSessionVariable());
-        this.sessionVariables = optionalSessionVariable.orElse(VariableMgr.getDefaultSessionVariable());
-    }
-
-    /**
-     * This constructor used by nereids planner
-     */
-    public ExportStmt(TableRef tableRef, String whereSql, String path,
-            Map<String, String> properties, BrokerDesc brokerDesc) {
-        this(tableRef, (Expr) null, path, properties, brokerDesc);
-        this.whereSql = whereSql;
+        // ConnectionContext may not exist when in replay thread
+        if (ConnectContext.get() != null) {
+            this.sessionVariables = VariableMgr.cloneSessionVariable(ConnectContext.get().getSessionVariable());
+        } else {
+            this.sessionVariables = VariableMgr.cloneSessionVariable(VariableMgr.getDefaultSessionVariable());
+        }
     }
 
     @Override
@@ -146,6 +146,11 @@ public class ExportStmt extends StatementBase {
     @Override
     public void analyze(Analyzer analyzer) throws UserException {
         super.analyze(analyzer);
+
+        if (!Config.enable_outfile_to_local && Objects.requireNonNull(path)
+                .startsWith(OutFileClause.LOCAL_FILE_PREFIX)) {
+            throw new AnalysisException("`enable_outfile_to_local` = false, exporting file to local fs is disabled.");
+        }
 
         tableRef = analyzer.resolveTableRef(tableRef);
         Preconditions.checkNotNull(tableRef);
@@ -162,16 +167,18 @@ public class ExportStmt extends StatementBase {
                 throw new AnalysisException("Do not support exporting temporary partitions");
             }
             partitionStringNames = optionalPartitionNames.get().getPartitionNames();
+        } else {
+            partitionStringNames = ImmutableList.of();
         }
 
         // check auth
-        if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(ConnectContext.get(),
-                                                                tblName.getDb(), tblName.getTbl(),
-                                                                PrivPredicate.SELECT)) {
+        if (!Env.getCurrentEnv().getAccessManager().checkTblPriv(ConnectContext.get(), tblName.getCtl(),
+                tblName.getDb(), tblName.getTbl(),
+                PrivPredicate.SELECT)) {
             ErrorReport.reportAnalysisException(ErrorCode.ERR_TABLEACCESS_DENIED_ERROR, "EXPORT",
-                                                ConnectContext.get().getQualifiedUser(),
-                                                ConnectContext.get().getRemoteIP(),
-                                                tblName.getDb() + ": " + tblName.getTbl());
+                    ConnectContext.get().getQualifiedUser(),
+                    ConnectContext.get().getRemoteIP(),
+                    tblName.getDb() + ": " + tblName.getTbl());
         }
         qualifiedUser = ConnectContext.get().getQualifiedUser();
         userIdentity = ConnectContext.get().getCurrentUserIdentity();
@@ -185,7 +192,7 @@ public class ExportStmt extends StatementBase {
         }
 
         // check path is valid
-        path = checkPath(path, brokerDesc.getStorageType());
+        StorageBackend.checkPath(path, brokerDesc.getStorageType(), null);
         if (brokerDesc.getStorageType() == StorageBackend.StorageType.BROKER) {
             BrokerMgr brokerMgr = analyzer.getEnv().getBrokerMgr();
             if (!brokerMgr.containsBroker(brokerDesc.getName())) {
@@ -201,11 +208,11 @@ public class ExportStmt extends StatementBase {
 
         // create job and analyze job
         setJob();
-        exportJob.analyze();
+        exportJob.generateOutfileStatement();
     }
 
     private void setJob() throws UserException {
-        exportJob = new ExportJob();
+        exportJob = new ExportJob(Env.getCurrentEnv().getNextId());
 
         Database db = Env.getCurrentInternalCatalog().getDbOrDdlException(this.tblName.getDb());
         exportJob.setDbId(db.getId());
@@ -219,7 +226,6 @@ public class ExportStmt extends StatementBase {
 
         // set where expr
         exportJob.setWhereExpr(this.whereExpr);
-        exportJob.setWhereSql(this.whereSql);
 
         // set path
         exportJob.setExportPath(this.path);
@@ -233,6 +239,9 @@ public class ExportStmt extends StatementBase {
         exportJob.setParallelism(this.parallelism);
         exportJob.setMaxFileSize(this.maxFileSize);
         exportJob.setDeleteExistingFiles(this.deleteExistingFiles);
+        exportJob.setWithBom(this.withBom);
+        exportJob.setDataConsistency(this.dataConsistency);
+        exportJob.setCompressType(this.compressionType);
 
         if (columns != null) {
             Splitter split = Splitter.on(',').trimResults().omitEmptyStrings();
@@ -245,16 +254,17 @@ public class ExportStmt extends StatementBase {
         // set sessions
         exportJob.setQualifiedUser(this.qualifiedUser);
         exportJob.setUserIdentity(this.userIdentity);
-        exportJob.setSessionVariables(this.sessionVariables);
-        exportJob.setTimeoutSecond(this.sessionVariables.getQueryTimeoutS());
+        SessionVariable clonedSessionVariable = VariableMgr.cloneSessionVariable(Optional.ofNullable(
+                ConnectContext.get().getSessionVariable()).orElse(VariableMgr.getDefaultSessionVariable()));
+        exportJob.setSessionVariables(clonedSessionVariable);
+        exportJob.setTimeoutSecond(this.timeout);
 
-        exportJob.setSql(this.toSql());
         exportJob.setOrigStmt(this.getOrigStmt());
     }
 
     // check partitions specified by user are belonged to the table.
     private void checkPartitions(Env env) throws AnalysisException {
-        if (partitionStringNames == null) {
+        if (partitionStringNames.isEmpty()) {
             return;
         }
 
@@ -268,7 +278,7 @@ public class ExportStmt extends StatementBase {
         table.readLock();
         try {
             // check table
-            if (!table.isPartitioned()) {
+            if (!table.isPartitionedTable()) {
                 throw new AnalysisException("Table[" + tblName.getTbl() + "] is not partitioned.");
             }
             Table.TableType tblType = table.getType();
@@ -299,43 +309,6 @@ public class ExportStmt extends StatementBase {
         }
     }
 
-    public static String checkPath(String path, StorageBackend.StorageType type) throws AnalysisException {
-        if (Strings.isNullOrEmpty(path)) {
-            throw new AnalysisException("No destination path specified.");
-        }
-
-        URI uri = URI.create(path);
-        String schema = uri.getScheme();
-        if (schema == null) {
-            throw new AnalysisException(
-                    "Invalid export path, there is no schema of URI found. please check your path.");
-        }
-        if (type == StorageBackend.StorageType.BROKER) {
-            if (!schema.equalsIgnoreCase("bos")
-                    && !schema.equalsIgnoreCase("afs")
-                    && !schema.equalsIgnoreCase("hdfs")
-                    && !schema.equalsIgnoreCase("ofs")
-                    && !schema.equalsIgnoreCase("obs")
-                    && !schema.equalsIgnoreCase("oss")
-                    && !schema.equalsIgnoreCase("s3a")
-                    && !schema.equalsIgnoreCase("cosn")
-                    && !schema.equalsIgnoreCase("gfs")
-                    && !schema.equalsIgnoreCase("jfs")
-                    && !schema.equalsIgnoreCase("gs")) {
-                throw new AnalysisException("Invalid broker path. please use valid 'hdfs://', 'afs://' , 'bos://',"
-                        + " 'ofs://', 'obs://', 'oss://', 's3a://', 'cosn://', 'gfs://', 'gs://' or 'jfs://' path.");
-            }
-        } else if (type == StorageBackend.StorageType.S3 && !schema.equalsIgnoreCase("s3")) {
-            throw new AnalysisException("Invalid export path. please use valid 's3://' path.");
-        } else if (type == StorageBackend.StorageType.HDFS && !schema.equalsIgnoreCase("hdfs")) {
-            throw new AnalysisException("Invalid export path. please use valid 'HDFS://' path.");
-        } else if (type == StorageBackend.StorageType.LOCAL && !schema.equalsIgnoreCase("file")) {
-            throw new AnalysisException(
-                        "Invalid export path. please use valid '" + OutFileClause.LOCAL_FILE_PREFIX + "' path.");
-        }
-        return path;
-    }
-
     private void checkProperties(Map<String, String> properties) throws UserException {
         for (String key : properties.keySet()) {
             if (!PROPERTIES_SET.contains(key.toLowerCase())) {
@@ -358,11 +331,6 @@ public class ExportStmt extends StatementBase {
         // "" means user specified zero columns
         this.columns = properties.getOrDefault(LoadStmt.KEY_IN_PARAM_COLUMNS, null);
 
-        // check columns are exits
-        if (columns != null) {
-            checkColumns();
-        }
-
         // format
         this.format = properties.getOrDefault(LoadStmt.KEY_IN_PARAM_FORMAT_TYPE, "csv").toLowerCase();
 
@@ -372,6 +340,15 @@ public class ExportStmt extends StatementBase {
             this.parallelism = Integer.parseInt(parallelismString);
         } catch (NumberFormatException e) {
             throw new UserException("The value of parallelism is invalid!");
+        }
+
+        // timeout
+        String timeoutString = properties.getOrDefault(PropertyAnalyzer.PROPERTIES_TIMEOUT,
+                String.valueOf(DEFAULT_TIMEOUT));
+        try {
+            this.timeout = Integer.parseInt(timeoutString);
+        } catch (NumberFormatException e) {
+            throw new UserException("The value of timeout is invalid!");
         }
 
         // max_file_size
@@ -386,24 +363,25 @@ public class ExportStmt extends StatementBase {
             // generate a random label
             this.label = "export_" + UUID.randomUUID();
         }
-    }
 
-    private void checkColumns() throws DdlException {
-        if (this.columns.isEmpty()) {
-            throw new DdlException("columns can not be empty");
-        }
-        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException(this.tblName.getDb());
-        Table table = db.getTableOrDdlException(this.tblName.getTbl());
-        List<String> tableColumns = table.getBaseSchema().stream().map(column -> column.getName())
-                .collect(Collectors.toList());
-        Splitter split = Splitter.on(',').trimResults().omitEmptyStrings();
+        // with bom
+        this.withBom = properties.getOrDefault(OutFileClause.PROP_WITH_BOM, "false");
 
-        List<String> columnsSpecified = split.splitToList(this.columns.toLowerCase());
-        for (String columnName : columnsSpecified) {
-            if (!tableColumns.contains(columnName)) {
-                throw new DdlException("unknown column [" + columnName + "] in table [" + this.tblName.getTbl() + "]");
+        // data consistency
+        if (properties.containsKey(DATA_CONSISTENCY)) {
+            String dataConsistencyStr = properties.get(DATA_CONSISTENCY);
+            if (ExportJob.CONSISTENT_NONE.equalsIgnoreCase(dataConsistencyStr)) {
+                this.dataConsistency = ExportJob.CONSISTENT_NONE;
+            } else if (ExportJob.CONSISTENT_PARTITION.equalsIgnoreCase(dataConsistencyStr)) {
+                this.dataConsistency = ExportJob.CONSISTENT_PARTITION;
+            } else {
+                throw new AnalysisException("The value of data_consistency is invalid, please use `"
+                        + ExportJob.CONSISTENT_PARTITION + "`/`" + ExportJob.CONSISTENT_NONE + "`");
             }
         }
+
+        // compress_type
+        this.compressionType = properties.getOrDefault(COMPRESS_TYPE, "");
     }
 
     @Override
@@ -449,5 +427,10 @@ public class ExportStmt extends StatementBase {
     @Override
     public String toString() {
         return toSql();
+    }
+
+    @Override
+    public StmtType stmtType() {
+        return StmtType.EXPORT;
     }
 }

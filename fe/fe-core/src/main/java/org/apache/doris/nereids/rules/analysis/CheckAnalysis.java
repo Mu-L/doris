@@ -21,7 +21,6 @@ import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.rules.Rule;
 import org.apache.doris.nereids.rules.RuleType;
 import org.apache.doris.nereids.trees.expressions.Expression;
-import org.apache.doris.nereids.trees.expressions.SlotReference;
 import org.apache.doris.nereids.trees.expressions.WindowExpression;
 import org.apache.doris.nereids.trees.expressions.functions.agg.AggregateFunction;
 import org.apache.doris.nereids.trees.expressions.functions.generator.TableGeneratingFunction;
@@ -46,7 +45,6 @@ import com.google.common.collect.ImmutableSet;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -77,9 +75,7 @@ public class CheckAnalysis implements AnalysisRuleFactory {
                     TableGeneratingFunction.class,
                     WindowExpression.class))
             .put(LogicalOneRowRelation.class, ImmutableSet.of(
-                    AggregateFunction.class,
                     GroupingScalarFunction.class,
-                    SlotReference.class,
                     TableGeneratingFunction.class,
                     WindowExpression.class))
             .put(LogicalProject.class, ImmutableSet.of(
@@ -120,45 +116,33 @@ public class CheckAnalysis implements AnalysisRuleFactory {
         if (unexpectedExpressionTypes.isEmpty()) {
             return;
         }
-        plan.getExpressions().forEach(c -> c.foreachUp(e -> {
-            for (Class<? extends Expression> type : unexpectedExpressionTypes) {
-                if (type.isInstance(e)) {
-                    throw new AnalysisException(plan.getType() + " can not contains "
-                            + type.getSimpleName() + " expression: " + ((Expression) e).toSql());
+        for (Expression expr : plan.getExpressions()) {
+            expr.foreachUp(e -> {
+                for (Class<? extends Expression> type : unexpectedExpressionTypes) {
+                    if (type.isInstance(e)) {
+                        throw new AnalysisException(plan.getType() + " can not contains "
+                                + type.getSimpleName() + " expression: " + ((Expression) e).toSql());
+                    }
                 }
-            }
-        }));
+            });
+        }
     }
 
     private void checkExpressionInputTypes(Plan plan) {
-        final Optional<TypeCheckResult> firstFailed = plan.getExpressions().stream()
-                .map(Expression::checkInputDataTypes)
-                .filter(TypeCheckResult::failed)
-                .findFirst();
-
-        if (firstFailed.isPresent()) {
-            throw new AnalysisException(firstFailed.get().getMessage());
+        for (Expression expression : plan.getExpressions()) {
+            TypeCheckResult firstFailed = expression.checkInputDataTypes();
+            if (firstFailed.failed()) {
+                throw new AnalysisException(firstFailed.getMessage());
+            }
         }
     }
 
     private void checkAggregate(LogicalAggregate<? extends Plan> aggregate) {
-        Set<AggregateFunction> aggregateFunctions = aggregate.getAggregateFunctions();
-        boolean distinctMultiColumns = aggregateFunctions.stream()
-                .anyMatch(fun -> fun.isDistinct() && fun.arity() > 1);
-        long distinctFunctionNum = aggregateFunctions.stream()
-                .filter(AggregateFunction::isDistinct)
-                .count();
-
-        if (distinctMultiColumns && distinctFunctionNum > 1) {
-            throw new AnalysisException(
-                    "The query contains multi count distinct or sum distinct, each can't have multi columns");
-        }
-        Optional<Expression> expr = aggregate.getGroupByExpressions().stream()
-                .filter(expression -> expression.containsType(AggregateFunction.class)).findFirst();
-        if (expr.isPresent()) {
-            throw new AnalysisException(
-                    "GROUP BY expression must not contain aggregate functions: "
-                            + expr.get().toSql());
+        for (Expression expr : aggregate.getGroupByExpressions()) {
+            if (expr.anyMatch(AggregateFunction.class::isInstance)) {
+                throw new AnalysisException(
+                        "GROUP BY expression must not contain aggregate functions: " + expr.toSql());
+            }
         }
     }
 }

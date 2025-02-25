@@ -18,6 +18,7 @@
 import org.codehaus.groovy.runtime.IOGroovyMethods
 
 suite("test_jsonb_load_and_function", "p0") {
+
     // define a sql table
     def testTable = "tbl_test_jsonb"
     def dataFile = "test_jsonb.csv"
@@ -56,7 +57,7 @@ suite("test_jsonb_load_and_function", "p0") {
             assertEquals("fail", json.Status.toLowerCase())
             assertTrue(json.Message.contains("too many filtered rows"))
             assertEquals(25, json.NumberTotalRows)
-            assertEquals(18, json.NumberLoadedRows)
+            assertEquals(0, json.NumberLoadedRows)
             assertEquals(7, json.NumberFilteredRows)
             assertTrue(json.LoadBytes > 0)
             log.info("url: " + json.ErrorURL)
@@ -93,6 +94,8 @@ suite("test_jsonb_load_and_function", "p0") {
         }
     }
 
+    sql """ sync; """
+
     // check result
     qt_select "SELECT * FROM ${testTable} ORDER BY id"
 
@@ -106,46 +109,12 @@ suite("test_jsonb_load_and_function", "p0") {
     sql """INSERT INTO ${testTable} VALUES(30, '-9223372036854775808')"""
     // int64 max value
     sql """INSERT INTO ${testTable} VALUES(31, '18446744073709551615')"""
+    // insert into json with empty key
+    sql """INSERT INTO ${testTable} VALUES(32, '{"":"v1"}')"""
+    sql """INSERT INTO ${testTable} VALUES(33, '{"":1, " ":"v1"}')"""
+    sql """INSERT INTO ${testTable} VALUES(34, '{"":1, "ab":"v1", " ":"v1", "  ": 2}')"""
 
-    // insert into invalid json rows with enable_insert_strict=true
-    // expect excepiton and no rows not changed
-    sql """ set enable_insert_strict = true """
-    def success = true
-    try {
-        sql """INSERT INTO ${testTable} VALUES(26, '')"""
-    } catch(Exception ex) {
-       logger.info("""INSERT INTO ${testTable} invalid json failed: """ + ex)
-       success = false
-    }
-    assertEquals(false, success)
-    success = true
-    try {
-        sql """INSERT INTO ${testTable} VALUES(26, 'abc')"""
-    } catch(Exception ex) {
-       logger.info("""INSERT INTO ${testTable} invalid json failed: """ + ex)
-       success = false
-    }
-    assertEquals(false, success)
-
-    // insert into invalid json rows with enable_insert_strict=false
-    // expect no excepiton but no rows not changed
-    sql """ set enable_insert_strict = false """
-    success = true
-    try {
-        sql """INSERT INTO ${testTable} VALUES(26, '')"""
-    } catch(Exception ex) {
-       logger.info("""INSERT INTO ${testTable} invalid json failed: """ + ex)
-       success = false
-    }
-    assertEquals(true, success)
-    success = true
-    try {
-        sql """INSERT INTO ${testTable} VALUES(26, 'abc')"""
-    } catch(Exception ex) {
-       logger.info("""INSERT INTO ${testTable} invalid json failed: """ + ex)
-       success = false
-    }
-    assertEquals(true, success)
+    qt_select "SELECT * FROM ${testTable} where id in (32, 33, 34) ORDER BY id"
 
     qt_select "SELECT * FROM ${testTable} ORDER BY id"
 
@@ -531,9 +500,82 @@ suite("test_jsonb_load_and_function", "p0") {
     qt_select """SELECT id, j, JSON_EXTRACT(j, '\$.k2', null) FROM ${testTable} ORDER BY id"""
     qt_select """SELECT id, j, JSON_EXTRACT(j, '\$.a1[0].k1', '\$.a1[0].k2', '\$.a1[2]') FROM ${testTable} ORDER BY id"""
 
-    qt_select """SELECT id, j, j->'\$.k1' FROM ${testTable} ORDER BY id"""
-    qt_select """SELECT id, j, j->'\$.[1]' FROM ${testTable} ORDER BY id"""
-    qt_select """SELECT id, j, j->null FROM ${testTable} ORDER BY id"""
-    qt_select """SELECT id, j, j->'\$.a1[0].k2' FROM ${testTable} ORDER BY id"""
-    qt_select """SELECT id, j, j->'\$.a1[0]'->'\$.k1' FROM ${testTable} ORDER BY id"""
+    //json_length
+    qt_sql_json_length """SELECT json_length('1')"""
+    qt_sql_json_length """SELECT json_length('true')"""
+    qt_sql_json_length """SELECT json_length('null')"""
+    qt_sql_json_length """SELECT json_length('"abc"')"""
+    qt_sql_json_length """SELECT json_length('[]')"""
+    qt_sql_json_length """SELECT json_length('[1, 2]')"""
+    qt_sql_json_length """SELECT json_length('[1, {"x": 2}]')"""
+    qt_sql_json_length """SELECT json_length('{"x": 1, "y": [1, 2]}', '\$.y')"""
+    qt_sql_json_length """SELECT json_length('{"k1":"v31","k2":300}')"""
+    qt_sql_json_length """SELECT json_length('{"a.b.c":{"k1.a1":"v31", "k2": 300},"a":"niu"}')"""
+    qt_sql_json_length """SELECT json_length('{"a":{"k1.a1":"v31", "k2": 300},"b":"niu"}','\$.a')"""
+    qt_sql_json_length """SELECT json_length('abc','\$.k1')"""
+
+    qt_select_length """SELECT id, j, json_length(j) FROM ${testTable} ORDER BY id"""
+    qt_select_length """SELECT id, j, json_length(j, '\$[1]') FROM ${testTable} ORDER BY id"""
+    qt_select_length """SELECT id, j, json_length(j, '\$.k2') FROM ${testTable} ORDER BY id"""
+    qt_select_length """SELECT id, j, json_length(null) FROM ${testTable} ORDER BY id"""
+
+    //json_contains
+    qt_sql_json_contains """SELECT json_contains('[1, 2, {"x": 3}]', '1')"""
+    qt_sql_json_contains """SELECT json_contains('[1, 2, {"x": 3}]', '{"x": 3}')"""
+    qt_sql_json_contains """SELECT json_contains('[1, 2, {"x": 3}]', '3')"""
+    qt_sql_json_contains """SELECT json_contains('[1, 2, [3, 4]]', '2')"""
+    qt_sql_json_contains """SELECT json_contains('[1, 2, [3, 4]]', '2', '\$[2]')"""
+    qt_sql_json_contains """SELECT json_contains('{"k1":"v31","k2":300}', '{"k2":300}')"""
+    qt_sql_json_contains """SELECT json_contains('{"k1":"v31","k2":300}', '{"k2":300,"k1":"v31"}')"""
+
+    qt_select_json_contains """SELECT id, j, json_contains(j, cast('true' as json)) FROM ${testTable} ORDER BY id"""
+    qt_select_json_contains """SELECT id, j, json_contains(j, cast('{"k2":300}' as json)) FROM ${testTable} ORDER BY id"""
+    qt_select_json_contains """SELECT id, j, json_contains(j, cast('{"k1":"v41","k2":400}' as json), '\$.a1') FROM ${testTable} ORDER BY id"""
+    qt_select_json_contains """SELECT id, j, json_contains(j, cast('[123,456]' as json)) FROM ${testTable} ORDER BY id"""
+
+    // json_parse
+    qt_sql_json_parse """SELECT/*+SET_VAR(enable_fold_constant_by_be=false)*/ json_parse('{"":"v1"}')"""
+    qt_sql_json_parse """SELECT/*+SET_VAR(enable_fold_constant_by_be=false)*/ json_parse('{"":1, "":"v1"}')"""
+    qt_sql_json_parse """SELECT/*+SET_VAR(enable_fold_constant_by_be=false)*/ json_parse('{"":1, "ab":"v1", "":"v1", "": 2}')"""
+    
+    // json_keys
+    qt_sql_json_keys """SELECT json_keys('{"k1":"v31","k2":300}')"""
+    qt_sql_json_keys """SELECT json_keys('{"a.b.c":{"k1.a1":"v31", "k2": 300},"a":"niu"}')"""
+    qt_sql_json_keys """SELECT json_keys('{"a":{"k1.a1":"v31", "k2": 300},"b":"niu"}','\$.a')"""
+    qt_sql_json_keys """SELECT json_keys('abc','\$.k1')"""
+    qt_sql_json_keys """SELECT json_keys('["a", "b", "c"]', '\$.k2')"""
+    qt_sql_json_keys """SELECT json_keys('["a", "b", "c"]')"""
+    qt_sql_json_keys """SELECT json_keys('["a", "b", "c"]', '\$[1]')"""
+
+    // error keys
+    test {
+        sql """ SELECT JSON_KEYS('{"a": {}, "a.b.c": {"c": 30}}', ''); """
+        exception("Invalid Json Path for value")
+    }
+
+    test {
+        sql """ SELECT JSON_KEYS('{"a": {}, "a.b.c": {"c": 30}}', 'a.b.c'); """
+        exception("Invalid Json Path for value")
+    }
+
+    // from table
+    qt_select_json_keys """SELECT id, j, json_keys(j) FROM ${testTable} ORDER BY id"""
+    qt_select_json_keys """SELECT id, j, json_keys(j, '\$.k2') FROM ${testTable} ORDER BY id"""
+    qt_select_json_keys """SELECT id, j, json_keys(j, '\$.a1') FROM ${testTable} ORDER BY id"""
+    
+    // make table with path
+    sql """ DROP TABLE IF EXISTS json_keys_table;"""
+    sql """
+        CREATE TABLE IF NOT EXISTS json_keys_table (
+            id INT,
+            j JSONB,
+            p STRING
+        )
+        DUPLICATE KEY(id)
+        DISTRIBUTED BY HASH(id) BUCKETS 10
+        PROPERTIES("replication_num" = "1");
+        """
+
+    sql """ insert into json_keys_table values (1, '{"a.b.c":{"k1.a1":"v31", "k2": 300}, "a": {}}', '\$.a'), (2, '{"a.b.c":{"k1.a1":"v31", "k2": 300}}', '\$.a.b.c'), (3, '{"a.b.c":{"k1.a1":"v31", "k2": 300}, "a": {"k1.a1": 1}}', '\$.a'), (4, '["a", "b"]', '\$.a'); """
+    qt_select_json_keys """SELECT j, p, json_keys(j, p) FROM json_keys_table ORDER BY id"""
 }

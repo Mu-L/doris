@@ -18,6 +18,10 @@
 suite("test_backup_restore") {
 
     def syncer = getSyncer()
+    if (!syncer.checkEnableFeatureBinlog()) {
+        logger.info("fe enable_feature_binlog is false, skip case test_backup_restore")
+        return
+    }
     def tableName = "tbl_backup_restore"
     def test_num = 0
     def insert_num = 5
@@ -46,22 +50,20 @@ suite("test_backup_restore") {
                INSERT INTO ${tableName} VALUES (${test_num}, ${i})
             """ 
     }
+    sql " sync "
     def res = sql "SELECT * FROM ${tableName}"
-    assertTrue(res.size() == insert_num)
+    assertEquals(res.size(), insert_num)
     sql """ 
             BACKUP SNAPSHOT ${context.dbName}.${snapshotName} 
             TO `__keep_on_local__` 
             ON (${tableName})
             PROPERTIES ("type" = "full")
         """
-    while (syncer.checkSnapshotFinish() == false) {
-        Thread.sleep(3000)
-    }
+    syncer.waitSnapshotFinish()
     assertTrue(syncer.getSnapshot("${snapshotName}", "${tableName}"))
     assertTrue(syncer.restoreSnapshot(true))
-    while (syncer.checkRestoreFinish() == false) {
-        Thread.sleep(3000)
-    }
+    syncer.waitTargetRestoreFinish()
+    target_sql " sync "
     res = target_sql "SELECT * FROM ${tableName}"
-    assertTrue(res.size() == insert_num)
+    assertEquals(res.size(), insert_num)
 }

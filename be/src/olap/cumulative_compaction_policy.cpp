@@ -28,15 +28,17 @@
 #include "olap/olap_common.h"
 #include "olap/tablet.h"
 #include "olap/tablet_meta.h"
+#include "util/debug_points.h"
 
 namespace doris {
 
 SizeBasedCumulativeCompactionPolicy::SizeBasedCumulativeCompactionPolicy(
         int64_t promotion_size, double promotion_ratio, int64_t promotion_min_size,
-        int64_t compaction_min_size)
+        int64_t promotion_version_count, int64_t compaction_min_size)
         : _promotion_size(promotion_size),
           _promotion_ratio(promotion_ratio),
           _promotion_min_size(promotion_min_size),
+          _promotion_version_count(promotion_version_count),
           _compaction_min_size(compaction_min_size) {}
 
 void SizeBasedCumulativeCompactionPolicy::calculate_cumulative_point(
@@ -103,7 +105,7 @@ void SizeBasedCumulativeCompactionPolicy::calculate_cumulative_point(
         VLOG_NOTICE
                 << "cumulative compaction size_based policy, calculate cumulative point value = "
                 << *ret_cumulative_point << ", calc promotion size value = " << promotion_size
-                << " tablet = " << tablet->full_name();
+                << " tablet = " << tablet->tablet_id();
     } else if (tablet->tablet_state() == TABLET_NOTREADY) {
         // tablet under alter process
         // we choose version next to the base version as cumulative point
@@ -120,7 +122,7 @@ void SizeBasedCumulativeCompactionPolicy::_calc_promotion_size(Tablet* tablet,
                                                                RowsetMetaSharedPtr base_rowset_meta,
                                                                int64_t* promotion_size) {
     int64_t base_size = base_rowset_meta->total_disk_size();
-    *promotion_size = base_size * _promotion_ratio;
+    *promotion_size = int64_t(base_size * _promotion_ratio);
 
     // promotion_size is between _promotion_size and _promotion_min_size
     if (*promotion_size >= _promotion_size) {
@@ -151,6 +153,15 @@ void SizeBasedCumulativeCompactionPolicy::update_cumulative_point(
         // satisfies promotion size.
         size_t total_size = output_rowset->rowset_meta()->total_disk_size();
         if (total_size >= tablet->cumulative_promotion_size()) {
+            tablet->set_cumulative_layer_point(output_rowset->end_version() + 1);
+        } else if (tablet->enable_unique_key_merge_on_write() &&
+                   output_rowset->end_version() - output_rowset->start_version() >
+                           _promotion_version_count) {
+            // for MoW table, if there's too many versions, the delete bitmap will grow to
+            // a very big size, which may cause the tablet meta too big and the `save_meta`
+            // operation too slow.
+            // if the rowset should not promotion according to it's disk size, we should also
+            // consider it's version count here.
             tablet->set_cumulative_layer_point(output_rowset->end_version() + 1);
         }
     }
@@ -236,6 +247,21 @@ int SizeBasedCumulativeCompactionPolicy::pick_input_rowsets(
         const int64_t max_compaction_score, const int64_t min_compaction_score,
         std::vector<RowsetSharedPtr>* input_rowsets, Version* last_delete_version,
         size_t* compaction_score, bool allow_delete) {
+    DBUG_EXECUTE_IF("SizeBasedCumulativeCompactionPolicy::pick_input_rowsets.set_input_rowsets", {
+        auto target_tablet_id = dp->param<int64_t>("tablet_id", -1);
+        if (target_tablet_id == tablet->tablet_id()) {
+            auto start_version = dp->param<int64_t>("start_version", -1);
+            auto end_version = dp->param<int64_t>("end_version", -1);
+            for (auto& rowset : candidate_rowsets) {
+                if (rowset->start_version() >= start_version &&
+                    rowset->end_version() <= end_version) {
+                    input_rowsets->push_back(rowset);
+                }
+            }
+        }
+        return input_rowsets->size();
+    })
+
     size_t promotion_size = tablet->cumulative_promotion_size();
     auto max_version = tablet->max_version().first;
     int transient_size = 0;
@@ -274,6 +300,8 @@ int SizeBasedCumulativeCompactionPolicy::pick_input_rowsets(
         transient_size += 1;
         input_rowsets->push_back(rowset);
     }
+    DBUG_EXECUTE_IF("SizeBaseCumulativeCompactionPolicy.pick_input_rowsets.return_input_rowsets",
+                    { return transient_size; })
 
     if (total_size >= promotion_size) {
         return transient_size;
@@ -335,7 +363,7 @@ int SizeBasedCumulativeCompactionPolicy::pick_input_rowsets(
     VLOG_CRITICAL << "cumulative compaction size_based policy, compaction_score = "
                   << *compaction_score << ", total_size = " << total_size
                   << ", calc promotion size value = " << promotion_size
-                  << ", tablet = " << tablet->full_name() << ", input_rowset size "
+                  << ", tablet = " << tablet->tablet_id() << ", input_rowset size "
                   << input_rowsets->size();
 
     // empty return

@@ -98,6 +98,10 @@ public class DataProperty implements Writable, GsonPostProcessable {
         return storagePolicy;
     }
 
+    public void setStoragePolicy(String storagePolicy) {
+        this.storagePolicy = storagePolicy;
+    }
+
     public boolean isStorageMediumSpecified() {
         return storageMediumSpecified;
     }
@@ -112,6 +116,10 @@ public class DataProperty implements Writable, GsonPostProcessable {
 
     public void setStorageMediumSpecified(boolean isSpecified) {
         storageMediumSpecified = isSpecified;
+    }
+
+    public void setStorageMedium(TStorageMedium medium) {
+        this.storageMedium = medium;
     }
 
     public static DataProperty read(DataInput in) throws IOException {

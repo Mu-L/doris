@@ -46,7 +46,6 @@ usage() {
     echo "
 Usage: $0 <options>
   Optional options:
-     --benchmark        build benchmark-tool
      --clean            clean and build ut
      --run              build and run all ut
      --run --filter=xx  build and run specified ut
@@ -78,8 +77,8 @@ eval set -- "${OPTS}"
 
 CLEAN=0
 RUN=0
-BUILD_BENCHMARK_TOOL='OFF'
 DENABLE_CLANG_COVERAGE='OFF'
+BUILD_AZURE='ON'
 FILTER=""
 if [[ "$#" != 1 ]]; then
     while true; do
@@ -90,10 +89,6 @@ if [[ "$#" != 1 ]]; then
             ;;
         --run)
             RUN=1
-            shift
-            ;;
-        --benchmark)
-            BUILD_BENCHMARK_TOOL='ON'
             shift
             ;;
         --coverage)
@@ -133,11 +128,43 @@ echo "Get params:
 "
 echo "Build Backend UT"
 
+update_submodule() {
+    local submodule_path=$1
+    local submodule_name=$2
+    local archive_url=$3
+
+    set +e
+    cd "${DORIS_HOME}"
+    echo "Update ${submodule_name} submodule ..."
+    git submodule update --init --recursive "${submodule_path}"
+    exit_code=$?
+    set -e
+    if [[ "${exit_code}" -ne 0 ]]; then
+        # try to get submodule's current commit
+        submodule_commit=$(git ls-tree HEAD "${submodule_path}" | awk '{print $3}')
+
+        commit_specific_url=$(echo "${archive_url}" | sed "s/refs\/heads/${submodule_commit}/")
+        echo "Update ${submodule_name} submodule failed, start to download and extract ${commit_specific_url}"
+
+        mkdir -p "${DORIS_HOME}/${submodule_path}"
+        curl -L "${commit_specific_url}" | tar -xz -C "${DORIS_HOME}/${submodule_path}" --strip-components=1
+    fi
+}
+
+update_submodule "be/src/apache-orc" "apache-orc" "https://github.com/apache/doris-thirdparty/archive/refs/heads/orc.tar.gz"
+update_submodule "be/src/clucene" "clucene" "https://github.com/apache/doris-thirdparty/archive/refs/heads/clucene.tar.gz"
+
 if [[ "_${DENABLE_CLANG_COVERAGE}" == "_ON" ]]; then
     echo "export DORIS_TOOLCHAIN=clang" >>custom_env.sh
 fi
 
-CMAKE_BUILD_DIR="${DORIS_HOME}/be/ut_build_${CMAKE_BUILD_TYPE}"
+if [[ -n "${DISABLE_BUILD_AZURE}" ]]; then
+    BUILD_AZURE='OFF'
+fi
+
+if [[ -z ${CMAKE_BUILD_DIR} ]]; then
+    CMAKE_BUILD_DIR="${DORIS_HOME}/be/ut_build_${CMAKE_BUILD_TYPE}"
+fi
 if [[ "${CLEAN}" -eq 1 ]]; then
     pushd "${DORIS_HOME}/gensrc"
     make clean
@@ -192,15 +219,20 @@ echo "-- Make program: ${MAKE_PROGRAM}"
 echo "-- Use ccache: ${CMAKE_USE_CCACHE}"
 echo "-- Extra cxx flags: ${EXTRA_CXX_FLAGS:-}"
 
+if [[ "${CMAKE_BUILD_TYPE}" = "ASAN" ]]; then
+    BUILD_TYPE="ASAN_UT"
+else
+    BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+fi
+
 cd "${CMAKE_BUILD_DIR}"
 "${CMAKE_CMD}" -G "${GENERATOR}" \
     -DCMAKE_MAKE_PROGRAM="${MAKE_PROGRAM}" \
-    -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+    -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DMAKE_TEST=ON \
     -DGLIBC_COMPATIBILITY="${GLIBC_COMPATIBILITY}" \
     -DUSE_LIBCPP="${USE_LIBCPP}" \
     -DBUILD_META_TOOL=OFF \
-    -DBUILD_BENCHMARK_TOOL="${BUILD_BENCHMARK_TOOL}" \
     -DWITH_MYSQL=ON \
     -DUSE_DWARF="${USE_DWARF}" \
     -DUSE_UNWIND="${USE_UNWIND}" \
@@ -211,6 +243,7 @@ cd "${CMAKE_BUILD_DIR}"
     ${CMAKE_USE_CCACHE:+${CMAKE_USE_CCACHE}} \
     -DENABLE_PCH="${ENABLE_PCH}" \
     -DDORIS_JAVA_HOME="${JAVA_HOME}" \
+    -DBUILD_AZURE="${BUILD_AZURE}" \
     "${DORIS_HOME}/be"
 "${BUILD_SYSTEM}" -j "${PARALLEL}"
 
@@ -233,7 +266,7 @@ rm -rf "${CONF_DIR}"
 mkdir "${CONF_DIR}"
 cp "${DORIS_HOME}/conf/be.conf" "${CONF_DIR}"/
 
-export TERM='xterm'
+export TERM="xterm"
 export UDF_RUNTIME_DIR="${DORIS_TEST_BINARY_DIR}/lib/udf-runtime"
 export LOG_DIR="${DORIS_TEST_BINARY_DIR}/log"
 while read -r variable; do
@@ -248,7 +281,41 @@ rm -f "${UDF_RUNTIME_DIR}"/*
 # clean all gcda file
 while read -r gcda_file; do
     rm "${gcda_file}"
-done < <(find "${DORIS_TEST_BINARY_DIR}" -name "*gcda")
+done < <(find "${CMAKE_BUILD_DIR}" -name "*gcda")
+
+setup_java_env() {
+    local java_version
+
+    echo "JAVA_HOME: ${JAVA_HOME}"
+    if [[ -z "${JAVA_HOME}" ]]; then
+        return 1
+    fi
+
+    local jvm_arch='amd64'
+    if [[ "$(uname -m)" == 'aarch64' ]]; then
+        jvm_arch='aarch64'
+    fi
+    java_version="$(
+        set -e
+        jdk_version "${JAVA_HOME}/bin/java"
+    )"
+    if [[ "${java_version}" -gt 8 ]]; then
+        export LD_LIBRARY_PATH="${JAVA_HOME}/lib/server:${JAVA_HOME}/lib:${LD_LIBRARY_PATH}"
+        # JAVA_HOME is jdk
+    elif [[ -d "${JAVA_HOME}/jre" ]]; then
+        export LD_LIBRARY_PATH="${JAVA_HOME}/jre/lib/${jvm_arch}/server:${JAVA_HOME}/jre/lib/${jvm_arch}:${LD_LIBRARY_PATH}"
+        # JAVA_HOME is jre
+    else
+        export LD_LIBRARY_PATH="${JAVA_HOME}/lib/${jvm_arch}/server:${JAVA_HOME}/lib/${jvm_arch}:${LD_LIBRARY_PATH}"
+    fi
+
+    if [[ "$(uname -s)" == 'Darwin' ]]; then
+        export DYLD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${DYLD_LIBRARY_PATH}"
+    fi
+}
+
+# prepare jvm if needed
+setup_java_env || true
 
 # prepare gtest output dir
 GTEST_OUTPUT_DIR="${CMAKE_BUILD_DIR}/gtest_output"
@@ -360,11 +427,11 @@ MACHINE_OS=$(uname -s)
 if [[ "${MACHINE_OS}" == "Darwin" ]]; then
     max_fd_limit='-XX:-MaxFDLimit'
 
-    if ! echo "${final_java_opt}" | grep "${max_fd_limit/-/\-}" >/dev/null; then
+    if ! echo "${final_java_opt}" | grep "${max_fd_limit/-/\\-}" >/dev/null; then
         final_java_opt="${final_java_opt} ${max_fd_limit}"
     fi
 
-    if [[ -n "${JAVA_OPTS}" ]] && ! echo "${JAVA_OPTS}" | grep "${max_fd_limit/-/\-}" >/dev/null; then
+    if [[ -n "${JAVA_OPTS}" ]] && ! echo "${JAVA_OPTS}" | grep "${max_fd_limit/-/\\-}" >/dev/null; then
         JAVA_OPTS="${JAVA_OPTS} ${max_fd_limit}"
     fi
 fi
@@ -372,9 +439,13 @@ fi
 # set LIBHDFS_OPTS for hadoop libhdfs
 export LIBHDFS_OPTS="${final_java_opt}"
 
+# set ORC_EXAMPLE_DIR for orc unit tests
+export ORC_EXAMPLE_DIR="${DORIS_HOME}/be/src/apache-orc/examples"
+
 # set asan and ubsan env to generate core file
 export DORIS_HOME="${DORIS_TEST_BINARY_DIR}/"
-export ASAN_OPTIONS=symbolize=1:abort_on_error=1:disable_coredump=0:unmap_shadow_on_exit=1:detect_container_overflow=0
+## detect_container_overflow=0, https://github.com/google/sanitizers/issues/193
+export ASAN_OPTIONS=symbolize=1:abort_on_error=1:disable_coredump=0:unmap_shadow_on_exit=1:detect_container_overflow=0:check_malloc_usable_size=0
 export UBSAN_OPTIONS=print_stacktrace=1
 export JAVA_OPTS="-Xmx1024m -DlogPath=${DORIS_HOME}/log/jni.log -Xloggc:${DORIS_HOME}/log/be.gc.log.${CUR_DATE} -Dsun.java.command=DorisBE -XX:-CriticalJNINatives -DJDBC_MIN_POOL=1 -DJDBC_MAX_POOL=100 -DJDBC_MAX_IDLE_TIME=300000"
 
@@ -390,11 +461,15 @@ if [[ -f "${test}" ]]; then
         if [[ -d "${DORIS_TEST_BINARY_DIR}"/report ]]; then
             rm -rf "${DORIS_TEST_BINARY_DIR}"/report
         fi
-        "${LLVM_PROFDATA} merge -o ${profdata} ${profraw}"
-        "${LLVM_COV} show -output-dir=${DORIS_TEST_BINARY_DIR}/report -format=html \
+        cmd1="${LLVM_PROFDATA} merge -o ${profdata} ${profraw}"
+        echo "${cmd1}"
+        eval "${cmd1}"
+        cmd2="${LLVM_COV} show -output-dir=${DORIS_TEST_BINARY_DIR}/report -format=html \
             -ignore-filename-regex='(.*gensrc/.*)|(.*_test\.cpp$)|(.*be/test.*)|(.*apache-orc/.*)|(.*clucene/.*)' \
             -instr-profile=${profdata} \
             -object=${test}"
+        echo "${cmd2}"
+        eval "${cmd2}"
     else
         "${test}" --gtest_output="xml:${GTEST_OUTPUT_DIR}/${file_name}.xml" --gtest_print_time=true "${FILTER}"
     fi

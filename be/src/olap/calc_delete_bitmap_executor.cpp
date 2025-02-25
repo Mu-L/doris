@@ -23,34 +23,35 @@
 
 #include "common/config.h"
 #include "common/logging.h"
+#include "olap/base_tablet.h"
 #include "olap/memtable.h"
-#include "olap/tablet.h"
 #include "util/time.h"
 
 namespace doris {
 using namespace ErrorCode;
 
-Status CalcDeleteBitmapToken::submit(TabletSharedPtr tablet, RowsetSharedPtr cur_rowset,
+Status CalcDeleteBitmapToken::submit(BaseTabletSPtr tablet, RowsetSharedPtr cur_rowset,
                                      const segment_v2::SegmentSharedPtr& cur_segment,
                                      const std::vector<RowsetSharedPtr>& target_rowsets,
-                                     int64_t end_version, RowsetWriter* rowset_writer) {
+                                     int64_t end_version, DeleteBitmapPtr delete_bitmap,
+                                     RowsetWriter* rowset_writer,
+                                     DeleteBitmapPtr tablet_delete_bitmap) {
     {
         std::shared_lock rlock(_lock);
         RETURN_IF_ERROR(_status);
+        _resource_ctx = thread_context()->resource_ctx();
     }
 
-    DeleteBitmapPtr bitmap = std::make_shared<DeleteBitmap>(tablet->tablet_id());
-    {
-        std::lock_guard wlock(_lock);
-        _delete_bitmaps.push_back(bitmap);
-    }
     return _thread_token->submit_func([=, this]() {
+        SCOPED_ATTACH_TASK(_resource_ctx);
         auto st = tablet->calc_segment_delete_bitmap(cur_rowset, cur_segment, target_rowsets,
-                                                     bitmap, end_version, rowset_writer);
+                                                     delete_bitmap, end_version, rowset_writer,
+                                                     tablet_delete_bitmap);
         if (!st.ok()) {
             LOG(WARNING) << "failed to calc segment delete bitmap, tablet_id: "
                          << tablet->tablet_id() << " rowset: " << cur_rowset->rowset_id()
-                         << " seg_id: " << cur_segment->id() << " version: " << end_version;
+                         << " seg_id: " << cur_segment->id() << " version: " << end_version
+                         << " error: " << st;
             std::lock_guard wlock(_lock);
             if (_status.ok()) {
                 _status = st;
@@ -65,22 +66,11 @@ Status CalcDeleteBitmapToken::wait() {
     return _status;
 }
 
-Status CalcDeleteBitmapToken::get_delete_bitmap(DeleteBitmapPtr res_bitmap) {
-    std::lock_guard wlock(_lock);
-    RETURN_IF_ERROR(_status);
-
-    for (auto bitmap : _delete_bitmaps) {
-        res_bitmap->merge(*bitmap);
-    }
-    _delete_bitmaps.clear();
-    return Status::OK();
-}
-
 void CalcDeleteBitmapExecutor::init() {
-    ThreadPoolBuilder("TabletCalcDeleteBitmapThreadPool")
-            .set_min_threads(1)
-            .set_max_threads(config::calc_delete_bitmap_max_thread)
-            .build(&_thread_pool);
+    static_cast<void>(ThreadPoolBuilder("TabletCalcDeleteBitmapThreadPool")
+                              .set_min_threads(1)
+                              .set_max_threads(config::calc_delete_bitmap_max_thread)
+                              .build(&_thread_pool));
 }
 
 std::unique_ptr<CalcDeleteBitmapToken> CalcDeleteBitmapExecutor::create_token() {
