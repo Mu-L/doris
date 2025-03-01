@@ -20,7 +20,6 @@ package org.apache.doris.common.jni;
 
 import org.apache.doris.common.jni.vec.ColumnType;
 import org.apache.doris.common.jni.vec.ColumnValue;
-import org.apache.doris.common.jni.vec.ScanPredicate;
 
 import org.apache.log4j.Logger;
 
@@ -41,6 +40,10 @@ public class MockJniScanner extends JniScanner {
     public static class MockColumnValue implements ColumnValue {
         private int i;
         private int j;
+
+        public MockColumnValue(int i, int j) {
+            set(i, j);
+        }
 
         public MockColumnValue() {
         }
@@ -132,17 +135,40 @@ public class MockJniScanner extends JniScanner {
 
         @Override
         public void unpackArray(List<ColumnValue> values) {
-
+            for (int m = 1; m < i; ++m) {
+                if (m % 3 == 0) {
+                    values.add(null);
+                } else {
+                    values.add(new MockColumnValue(i, j + m));
+                }
+            }
         }
 
         @Override
         public void unpackMap(List<ColumnValue> keys, List<ColumnValue> values) {
-
+            for (int m = 0; m < i; ++m) {
+                values.add(new MockColumnValue(i + m, j));
+            }
+            for (int m = 0; m < i; ++m) {
+                if (m % 3 == 0) {
+                    values.add(null);
+                } else {
+                    values.add(new MockColumnValue(i, j + m));
+                }
+            }
         }
 
         @Override
         public void unpackStruct(List<Integer> structFieldIndex, List<ColumnValue> values) {
-
+            structFieldIndex.clear();
+            structFieldIndex.add(0);
+            structFieldIndex.add(1);
+            if ((i + j) % 4 == 0) {
+                values.add(null);
+            } else {
+                values.add(new MockColumnValue(i, j));
+            }
+            values.add(new MockColumnValue(i, j + 3));
         }
     }
 
@@ -160,15 +186,7 @@ public class MockJniScanner extends JniScanner {
         for (int i = 0; i < types.length; i++) {
             columnTypes[i] = ColumnType.parseType(requiredFields[i], types[i]);
         }
-        ScanPredicate[] predicates = new ScanPredicate[0];
-        if (params.containsKey("push_down_predicates")) {
-            long predicatesAddress = Long.parseLong(params.get("push_down_predicates"));
-            if (predicatesAddress != 0) {
-                predicates = ScanPredicate.parseScanPredicates(predicatesAddress, columnTypes);
-                LOG.info("MockJniScanner gets pushed-down predicates:  " + ScanPredicate.dump(predicates));
-            }
-        }
-        initTableInfo(columnTypes, requiredFields, predicates, batchSize);
+        initTableInfo(columnTypes, requiredFields, batchSize);
     }
 
     @Override

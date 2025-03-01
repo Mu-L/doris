@@ -22,18 +22,23 @@ import org.apache.doris.catalog.Type;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 import org.apache.doris.nereids.types.FloatType;
 
-import java.text.NumberFormat;
+import java.math.BigDecimal;
 
 /**
  * float type literal
  */
-public class FloatLiteral extends Literal {
+public class FloatLiteral extends FractionalLiteral {
 
     private final float value;
 
     public FloatLiteral(float value) {
         super(FloatType.INSTANCE);
         this.value = value;
+    }
+
+    @Override
+    public BigDecimal getBigDecimalValue() {
+        return new BigDecimal(String.valueOf(value));
     }
 
     @Override
@@ -48,13 +53,6 @@ public class FloatLiteral extends Literal {
 
     @Override
     public LiteralExpr toLegacyLiteral() {
-        return new org.apache.doris.analysis.FloatLiteral((double) value, Type.FLOAT);
-    }
-
-    @Override
-    public String getStringValue() {
-        NumberFormat nf = NumberFormat.getInstance();
-        nf.setGroupingUsed(false);
-        return nf.format(value);
+        return new org.apache.doris.analysis.FloatLiteral(getDouble(), Type.FLOAT);
     }
 }

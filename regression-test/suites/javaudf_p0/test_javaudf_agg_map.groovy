@@ -23,6 +23,7 @@ import java.nio.file.Paths
 
 suite("test_javaudf_agg_map") {
     def jarPath = """${context.file.parent}/jars/java-udf-case-jar-with-dependencies.jar"""
+    scp_udf_file_to_all_be(jarPath)
     log.info("Jar path: ${jarPath}".toString())
     try {
         try_sql("DROP FUNCTION IF EXISTS mapii(Map<Int,Int>);")
@@ -32,9 +33,9 @@ suite("test_javaudf_agg_map") {
              CREATE TABLE IF NOT EXISTS db_agg_map(
                         `id` INT NULL COMMENT "",
                         `i` INT NULL COMMENT "",
-   						`d` Double NULL COMMENT "",
-   					    `mii` Map<INT, INT> NULL COMMENT "",
-   					    `mid` Map<INT, Double> NULL COMMENT ""
+                        `d` Double NULL COMMENT "",
+                        `mii` Map<INT, INT> NULL COMMENT "",
+                        `mid` Map<INT, Double> NULL COMMENT ""
             ) ENGINE=OLAP
             DUPLICATE KEY(`id`)
             DISTRIBUTED BY HASH(`id`) BUCKETS 1

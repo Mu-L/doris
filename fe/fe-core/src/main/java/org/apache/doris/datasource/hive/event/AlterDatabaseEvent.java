@@ -29,6 +29,7 @@ import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.NotificationEvent;
 import org.apache.hadoop.hive.metastore.messaging.json.JSONAlterDatabaseMessage;
 
+import java.security.SecureRandom;
 import java.util.List;
 
 /**
@@ -41,13 +42,15 @@ public class AlterDatabaseEvent extends MetastoreEvent {
 
     // true if this alter event was due to a rename operation
     private final boolean isRename;
+    private final String dbNameAfter;
 
     // for test
     public AlterDatabaseEvent(long eventId, String catalogName, String dbName, boolean isRename) {
-        super(eventId, catalogName, dbName, null);
+        super(eventId, catalogName, dbName, null, MetastoreEventType.ALTER_DATABASE);
         this.isRename = isRename;
         this.dbBefore = null;
         this.dbAfter = null;
+        this.dbNameAfter = isRename ? (dbName + new SecureRandom().nextInt(10)) : dbName;
     }
 
     private AlterDatabaseEvent(NotificationEvent event,
@@ -61,9 +64,10 @@ public class AlterDatabaseEvent extends MetastoreEvent {
                                 .getAlterDatabaseMessage(event.getMessage());
             dbBefore = Preconditions.checkNotNull(alterDatabaseMessage.getDbObjBefore());
             dbAfter = Preconditions.checkNotNull(alterDatabaseMessage.getDbObjAfter());
+            dbNameAfter = dbAfter.getName();
         } catch (Exception e) {
             throw new MetastoreNotificationException(
-                    debugString("Unable to parse the alter database message"), e);
+                    getMsgWithEventInfo("Unable to parse the alter database message"), e);
         }
         // this is a rename event if either dbName of before and after object changed
         isRename = !dbBefore.getName().equalsIgnoreCase(dbAfter.getName());
@@ -78,13 +82,13 @@ public class AlterDatabaseEvent extends MetastoreEvent {
             throw new DdlException("Only support ExternalCatalog Databases");
         }
         if (catalog.getDbNullable(dbAfter.getName()) != null) {
-            infoLog("AlterExternalDatabase canceled, because dbAfter has exist, "
+            logInfo("AlterExternalDatabase canceled, because dbAfter has exist, "
                             + "catalogName:[{}],dbName:[{}]",
                     catalogName, dbAfter.getName());
             return;
         }
-        Env.getCurrentEnv().getCatalogMgr().dropExternalDatabase(dbBefore.getName(), catalogName, true);
-        Env.getCurrentEnv().getCatalogMgr().createExternalDatabase(dbAfter.getName(), catalogName, true);
+        Env.getCurrentEnv().getCatalogMgr().unregisterExternalDatabase(dbBefore.getName(), catalogName);
+        Env.getCurrentEnv().getCatalogMgr().registerExternalDatabaseFromEvent(dbAfter.getName(), catalogName);
 
     }
 
@@ -97,6 +101,10 @@ public class AlterDatabaseEvent extends MetastoreEvent {
         return isRename;
     }
 
+    public String getDbNameAfter() {
+        return dbNameAfter;
+    }
+
     @Override
     protected void process() throws MetastoreNotificationException {
         try {
@@ -105,10 +113,10 @@ public class AlterDatabaseEvent extends MetastoreEvent {
                 return;
             }
             // only can change properties,we do nothing
-            infoLog("catalogName:[{}],dbName:[{}]", catalogName, dbName);
+            logInfo("catalogName:[{}],dbName:[{}]", catalogName, dbName);
         } catch (Exception e) {
             throw new MetastoreNotificationException(
-                    debugString("Failed to process event"), e);
+                    getMsgWithEventInfo("Failed to process event"), e);
         }
     }
 }

@@ -47,6 +47,7 @@ import java.util.stream.Collectors;
  */
 public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSignature, Udf {
     private final String dbName;
+    private final long functionId;
     private final TFunctionBinaryType binaryType;
     private final FunctionSignature signature;
     private final DataType intermediateType;
@@ -61,18 +62,22 @@ public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSig
     private final String getValueFn;
     private final String removeFn;
     private final String checkSum;
+    private final boolean isStaticLoad;
+    private final long expirationTime;
 
     /**
      * Constructor of UDAF
      */
-    public JavaUdaf(String name, String dbName, TFunctionBinaryType binaryType, FunctionSignature signature,
+    public JavaUdaf(String name, long functionId, String dbName, TFunctionBinaryType binaryType,
+            FunctionSignature signature,
             DataType intermediateType, NullableMode nullableMode,
             String objectFile, String symbol,
             String initFn, String updateFn, String mergeFn,
             String serializeFn, String finalizeFn, String getValueFn, String removeFn,
-            boolean isDistinct, String checkSum, Expression... args) {
+            boolean isDistinct, String checkSum, boolean isStaticLoad, long expirationTime, Expression... args) {
         super(name, isDistinct, args);
         this.dbName = dbName;
+        this.functionId = functionId;
         this.binaryType = binaryType;
         this.signature = signature;
         this.intermediateType = intermediateType == null ? signature.returnType : intermediateType;
@@ -87,6 +92,8 @@ public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSig
         this.getValueFn = getValueFn;
         this.removeFn = removeFn;
         this.checkSum = checkSum;
+        this.isStaticLoad = isStaticLoad;
+        this.expirationTime = expirationTime;
     }
 
     @Override
@@ -115,9 +122,9 @@ public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSig
     @Override
     public JavaUdaf withDistinctAndChildren(boolean isDistinct, List<Expression> children) {
         Preconditions.checkArgument(children.size() == this.children.size());
-        return new JavaUdaf(getName(), dbName, binaryType, signature, intermediateType, nullableMode,
+        return new JavaUdaf(getName(), functionId, dbName, binaryType, signature, intermediateType, nullableMode,
                 objectFile, symbol, initFn, updateFn, mergeFn, serializeFn, finalizeFn, getValueFn, removeFn,
-                isDistinct, checkSum, children.toArray(new Expression[0]));
+                isDistinct, checkSum, isStaticLoad, expirationTime, children.toArray(new Expression[0]));
     }
 
     /**
@@ -145,10 +152,10 @@ public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSig
             intermediateType = DataType.fromCatalogType(aggregate.getIntermediateType());
         }
 
-        JavaUdaf udaf = new JavaUdaf(fnName, dbName, aggregate.getBinaryType(), sig,
+        JavaUdaf udaf = new JavaUdaf(fnName, aggregate.getId(), dbName, aggregate.getBinaryType(), sig,
                 intermediateType,
                 aggregate.getNullableMode(),
-                aggregate.getLocation().getLocation(),
+                aggregate.getLocation() == null ? null : aggregate.getLocation().getLocation(),
                 aggregate.getSymbolName(),
                 aggregate.getInitFnSymbol(),
                 aggregate.getUpdateFnSymbol(),
@@ -159,6 +166,8 @@ public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSig
                 aggregate.getRemoveFnSymbol(),
                 false,
                 aggregate.getChecksum(),
+                aggregate.isStaticLoad(),
+                aggregate.getExpirationTime(),
                 virtualSlots);
 
         JavaUdafBuilder builder = new JavaUdafBuilder(udaf);
@@ -179,7 +188,7 @@ public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSig
                     signature.returnType.toCatalogDataType(),
                     signature.hasVarArgs,
                     intermediateType.toCatalogDataType(),
-                    URI.create(objectFile),
+                    objectFile == null ? null : URI.create(objectFile),
                     initFn,
                     updateFn,
                     mergeFn,
@@ -192,6 +201,9 @@ public class JavaUdaf extends AggregateFunction implements ExplicitlyCastableSig
             expr.setBinaryType(binaryType);
             expr.setNullableMode(nullableMode);
             expr.setChecksum(checkSum);
+            expr.setId(functionId);
+            expr.setStaticLoad(isStaticLoad);
+            expr.setExpirationTime(expirationTime);
             return expr;
         } catch (Exception e) {
             throw new AnalysisException(e.getMessage(), e.getCause());

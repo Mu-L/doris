@@ -21,60 +21,53 @@
 
 #include "common/status.h"
 #include "operator.h"
-#include "vec/exec/vsort_node.h"
 
 namespace doris {
-class ExecNode;
+#include "common/compile_check_begin.h"
 class RuntimeState;
 
 namespace pipeline {
 
-class SortSourceOperatorBuilder final : public OperatorBuilder<vectorized::VSortNode> {
-public:
-    SortSourceOperatorBuilder(int32_t id, ExecNode* sort_node);
-
-    bool is_source() const override { return true; }
-
-    OperatorPtr build_operator() override;
-};
-
-class SortSourceOperator final : public SourceOperator<SortSourceOperatorBuilder> {
-public:
-    SortSourceOperator(OperatorBuilderBase* operator_builder, ExecNode* sort_node);
-    Status open(RuntimeState*) override { return Status::OK(); }
-};
-
 class SortSourceOperatorX;
-class SortLocalState final : public PipelineXLocalState<SortDependency> {
-    ENABLE_FACTORY_CREATOR(SortLocalState);
+class SortSinkOperatorX;
 
+class SortLocalState final : public PipelineXLocalState<SortSharedState> {
 public:
+    ENABLE_FACTORY_CREATOR(SortLocalState);
     SortLocalState(RuntimeState* state, OperatorXBase* parent);
-
-    Status init(RuntimeState* state, LocalStateInfo& info) override;
-    Status close(RuntimeState* state) override;
+    ~SortLocalState() override = default;
 
 private:
     friend class SortSourceOperatorX;
-
-    RuntimeProfile::Counter* _get_next_timer = nullptr;
 };
 
-class SortSourceOperatorX final : public OperatorXBase {
+class SortSourceOperatorX final : public OperatorX<SortLocalState> {
 public:
-    SortSourceOperatorX(ObjectPool* pool, const TPlanNode& tnode, const DescriptorTbl& descs);
-    bool can_read(RuntimeState* state) override;
+    using Base = OperatorX<SortLocalState>;
+    SortSourceOperatorX(ObjectPool* pool, const TPlanNode& tnode, int operator_id,
+                        const DescriptorTbl& descs);
+    Status get_block(RuntimeState* state, vectorized::Block* block, bool* eos) override;
 
-    Status setup_local_state(RuntimeState* state, LocalStateInfo& info) override;
-
-    Status get_block(RuntimeState* state, vectorized::Block* block,
-                     SourceState& source_state) override;
+    Status init(const TPlanNode& tnode, RuntimeState* state) override;
+    Status prepare(RuntimeState* state) override;
 
     bool is_source() const override { return true; }
 
+    bool use_local_merge() const { return _merge_by_exchange; }
+    const vectorized::SortDescription& get_sort_description(RuntimeState* state) const;
+
 private:
+    friend class PipelineFragmentContext;
     friend class SortLocalState;
+
+    const bool _merge_by_exchange;
+    std::vector<bool> _is_asc_order;
+    std::vector<bool> _nulls_first;
+    // Expressions and parameters used for build _sort_description
+    vectorized::VSortExecExprs _vsort_exec_exprs;
+    const int64_t _offset;
 };
 
 } // namespace pipeline
+#include "common/compile_check_end.h"
 } // namespace doris

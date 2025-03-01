@@ -22,55 +22,50 @@
 #include "pipeline/exec/operator.h"
 
 namespace doris::pipeline {
-
-OPERATOR_CODE_GENERATOR(SortSourceOperator, SourceOperator)
+#include "common/compile_check_begin.h"
 
 SortLocalState::SortLocalState(RuntimeState* state, OperatorXBase* parent)
-        : PipelineXLocalState<SortDependency>(state, parent), _get_next_timer(nullptr) {}
+        : PipelineXLocalState<SortSharedState>(state, parent) {}
 
-Status SortLocalState::init(RuntimeState* state, LocalStateInfo& info) {
-    RETURN_IF_ERROR(PipelineXLocalState<SortDependency>::init(state, info));
-    _get_next_timer = ADD_TIMER(profile(), "GetResultTime");
-    return Status::OK();
-}
-
-SortSourceOperatorX::SortSourceOperatorX(ObjectPool* pool, const TPlanNode& tnode,
+SortSourceOperatorX::SortSourceOperatorX(ObjectPool* pool, const TPlanNode& tnode, int operator_id,
                                          const DescriptorTbl& descs)
-        : OperatorXBase(pool, tnode, descs) {}
+        : OperatorX<SortLocalState>(pool, tnode, operator_id, descs),
+          _merge_by_exchange(tnode.sort_node.merge_by_exchange),
+          _offset(tnode.sort_node.__isset.offset ? tnode.sort_node.offset : 0) {}
 
-Status SortSourceOperatorX::get_block(RuntimeState* state, vectorized::Block* block,
-                                      SourceState& source_state) {
-    auto& local_state = state->get_local_state(id())->cast<SortLocalState>();
-    SCOPED_TIMER(local_state._get_next_timer);
-    bool eos;
-    RETURN_IF_ERROR_OR_CATCH_EXCEPTION(
-            local_state._shared_state->sorter->get_next(state, block, &eos));
-    local_state.reached_limit(block, &eos);
-    if (eos) {
-        _runtime_profile->add_info_string(
-                "Spilled", local_state._shared_state->sorter->is_spilled() ? "true" : "false");
-        source_state = SourceState::FINISHED;
+Status SortSourceOperatorX::init(const TPlanNode& tnode, RuntimeState* state) {
+    RETURN_IF_ERROR(Base::init(tnode, state));
+    RETURN_IF_ERROR(_vsort_exec_exprs.init(tnode.sort_node.sort_info, _pool));
+    _is_asc_order = tnode.sort_node.sort_info.is_asc_order;
+    _nulls_first = tnode.sort_node.sort_info.nulls_first;
+    return Status::OK();
+}
+
+Status SortSourceOperatorX::prepare(RuntimeState* state) {
+    RETURN_IF_ERROR(Base::prepare(state));
+    // spill sort _child may be nullptr.
+    if (_child) {
+        RETURN_IF_ERROR(_vsort_exec_exprs.prepare(state, _child->row_desc(), _row_descriptor));
+        RETURN_IF_ERROR(_vsort_exec_exprs.open(state));
     }
     return Status::OK();
 }
 
-bool SortSourceOperatorX::can_read(RuntimeState* state) {
-    auto& local_state = state->get_local_state(id())->cast<SortLocalState>();
-    return local_state._dependency->done();
+Status SortSourceOperatorX::get_block(RuntimeState* state, vectorized::Block* block, bool* eos) {
+    auto& local_state = get_local_state(state);
+    SCOPED_TIMER(local_state.exec_time_counter());
+    SCOPED_PEAK_MEM(&local_state._estimate_memory_usage);
+
+    RETURN_IF_ERROR(local_state._shared_state->sorter->get_next(state, block, eos));
+    local_state.reached_limit(block, eos);
+    return Status::OK();
 }
 
-Status SortSourceOperatorX::setup_local_state(RuntimeState* state, LocalStateInfo& info) {
-    auto local_state = SortLocalState::create_shared(state, this);
-    state->emplace_local_state(id(), local_state);
-    return local_state->init(state, info);
+const vectorized::SortDescription& SortSourceOperatorX::get_sort_description(
+        RuntimeState* state) const {
+    auto& local_state = get_local_state(state);
+    return local_state._shared_state->sorter->get_sort_description();
 }
 
-Status SortLocalState::close(RuntimeState* state) {
-    if (_closed) {
-        return Status::OK();
-    }
-    _shared_state->sorter = nullptr;
-    return PipelineXLocalState<SortDependency>::close(state);
-}
-
+#include "common/compile_check_end.h"
 } // namespace doris::pipeline

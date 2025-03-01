@@ -37,7 +37,7 @@
 
 namespace doris {
 namespace io {
-class IOContext;
+struct IOContext;
 
 static inline constexpr size_t kMaxPipeBufferedBytes = 4 * 1024 * 1024;
 
@@ -76,12 +76,20 @@ public:
 
     Status read_one_message(std::unique_ptr<uint8_t[]>* data, size_t* length);
 
-    FileSystemSPtr fs() const override { return nullptr; }
-
     size_t get_queue_size() { return _buf_queue.size(); }
 
     // used for pipeline load, which use TUniqueId(lo: query_id.lo + fragment_id, hi: query_id.hi) as pipe_id
     static TUniqueId calculate_pipe_id(const UniqueId& query_id, int32_t fragment_id);
+
+    size_t max_capacity() const { return _max_buffered_bytes; }
+
+    size_t current_capacity();
+
+    bool is_chunked_transfer() const { return _is_chunked_transfer; }
+
+    void set_is_chunked_transfer(bool is_chunked_transfer) {
+        _is_chunked_transfer = is_chunked_transfer;
+    }
 
 protected:
     Status read_at_impl(size_t offset, Slice result, size_t* bytes_read,
@@ -117,6 +125,10 @@ private:
 
     // no use, only for compatibility with the `Path` interface
     Path _path = "";
+
+    // When importing JSON data and using chunked transfer encoding,
+    // the data needs to be completely read before it can be parsed.
+    bool _is_chunked_transfer = false;
 };
 } // namespace io
 } // namespace doris

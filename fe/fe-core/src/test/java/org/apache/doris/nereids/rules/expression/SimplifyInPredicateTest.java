@@ -34,20 +34,27 @@ public class SimplifyInPredicateTest extends ExpressionRewriteTestHelper {
     @Test
     public void test() {
         executor = new ExpressionRuleExecutor(ImmutableList.of(
-                FoldConstantRule.INSTANCE,
-                SimplifyInPredicate.INSTANCE
+                bottomUp(
+                    FoldConstantRule.INSTANCE,
+                    SimplifyInPredicate.INSTANCE
+                )
         ));
         Map<String, Slot> mem = Maps.newHashMap();
         Expression rewrittenExpression = PARSER.parseExpression("cast(CA as DATETIME) in ('1992-01-31 00:00:00', '1992-02-01 00:00:00')");
+        // after parse and type coercion: CAST(CAST(CA AS DATETIMEV2(0)) AS DATETIMEV2(6)) IN ('1992-01-31 00:00:00.000000', '1992-02-01 00:00:00.000000')
         rewrittenExpression = typeCoercion(replaceUnboundSlot(rewrittenExpression, mem));
+        // after first rewrite: CAST(CA AS DATETIMEV2(0)) IN ('1992-01-31 00:00:00', '1992-02-01 00:00:00')
+        rewrittenExpression = executor.rewrite(rewrittenExpression, context);
+        // after second rewrite: CA IN ('1992-01-31', '1992-02-01')
         rewrittenExpression = executor.rewrite(rewrittenExpression, context);
         Expression expectedExpression = PARSER.parseExpression("CA in (cast('1992-01-31' as date), cast('1992-02-01' as date))");
         expectedExpression = replaceUnboundSlot(expectedExpression, mem);
         executor = new ExpressionRuleExecutor(ImmutableList.of(
+            bottomUp(
                 FoldConstantRule.INSTANCE
+            )
         ));
         expectedExpression = executor.rewrite(expectedExpression, context);
-        Assertions.assertEquals(expectedExpression.toSql(), rewrittenExpression.toSql());
+        Assertions.assertEquals(expectedExpression, rewrittenExpression);
     }
-
 }

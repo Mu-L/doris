@@ -49,6 +49,12 @@ public abstract class Match extends BinaryOperator implements PropagateNullable 
                 return Operator.MATCH_ALL;
             case "MATCH_PHRASE":
                 return Operator.MATCH_PHRASE;
+            case "MATCH_PHRASE_PREFIX":
+                return Operator.MATCH_PHRASE_PREFIX;
+            case "MATCH_REGEXP":
+                return Operator.MATCH_REGEXP;
+            case "MATCH_PHRASE_EDGE":
+                return Operator.MATCH_PHRASE_EDGE;
             default:
                 throw new AnalysisException("UnSupported type for match: " + symbol);
         }
@@ -70,7 +76,7 @@ public abstract class Match extends BinaryOperator implements PropagateNullable 
     }
 
     @Override
-    public String toSql() {
+    public String computeToSql() {
         return "(" + left().toSql() + " " + symbol + " " + right().toSql() + ")";
     }
 

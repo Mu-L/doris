@@ -125,8 +125,7 @@ suite('complex_insert') {
         ) unique key (id, id1)
         distributed by hash(id, id1) buckets 13
         properties(
-            'replication_num'='1',
-            "function_column.sequence_col" = "c4"
+            'replication_num'='1'
         );
     '''
 
@@ -178,15 +177,15 @@ suite('complex_insert') {
 
     sql 'insert into t1(id, c1, c2, c3) select id, c1 * 2, c2, c3 from t1'
     sql 'sync'
-    qt_sql_1 'select * from t1, t2, t3 order by t1.id, t1.id1, t2.id, t3.id'
+    qt_sql_1 'select * from t1, t2, t3 order by t1.id, t1.id1, t2.id, t2.c1, t3.id'
 
     sql 'insert into t2(id, c1, c2, c3) select id, c1, c2 * 2, c3 from t2'
     sql 'sync'
-    qt_sql_2 'select * from t1, t2, t3 order by t1.id, t1.id1, t2.id, t3.id'
+    qt_sql_2 'select * from t1, t2, t3 order by t1.id, t1.id1, t2.id, t2.c1, t3.id'
 
     sql 'insert into t2(c1, c3) select c1 + 1, c3 + 1 from (select id, c1, c3 from t1 order by id, c1 limit 10) t1, t3'
     sql 'sync'
-    qt_sql_3 'select * from t1, t2, t3 order by t1.id, t1.id1, t2.id, t3.id'
+    qt_sql_3 'select * from t1, t2, t3 order by t1.id, t1.id1, t2.id, t2.c1, t3.id'
 
     sql 'drop table if exists agg_have_dup_base'
 
@@ -208,5 +207,4 @@ suite('complex_insert') {
     sql 'insert into agg_have_dup_base select -4, -4, -4, \'d\''
     sql 'sync'
     qt_mv 'select * from agg_have_dup_base'
-
 }

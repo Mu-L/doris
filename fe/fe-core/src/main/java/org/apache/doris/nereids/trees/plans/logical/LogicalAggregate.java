@@ -18,19 +18,26 @@
 package org.apache.doris.nereids.trees.plans.logical;
 
 import org.apache.doris.nereids.memo.GroupExpression;
+import org.apache.doris.nereids.properties.DataTrait;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
 import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.functions.ExpressionTrait;
+import org.apache.doris.nereids.trees.expressions.functions.agg.AggregateFunction;
+import org.apache.doris.nereids.trees.expressions.functions.agg.AggregatePhase;
+import org.apache.doris.nereids.trees.expressions.functions.agg.Count;
+import org.apache.doris.nereids.trees.expressions.functions.agg.Ndv;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.algebra.Aggregate;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
+import org.apache.doris.nereids.util.ExpressionUtils;
 import org.apache.doris.nereids.util.Utils;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 
 import java.util.List;
 import java.util.Objects;
@@ -144,12 +151,18 @@ public class LogicalAggregate<CHILD_TYPE extends Plan>
         this.sourceRepeat = Objects.requireNonNull(sourceRepeat, "sourceRepeat cannot be null");
     }
 
+    @Override
     public List<Expression> getGroupByExpressions() {
         return groupByExpressions;
     }
 
+    @Override
     public List<NamedExpression> getOutputExpressions() {
         return outputExpressions;
+    }
+
+    public NamedExpression getOutputExpression(int index) {
+        return outputExpressions.get(index);
     }
 
     public String getOutputExprsSql() {
@@ -158,10 +171,6 @@ public class LogicalAggregate<CHILD_TYPE extends Plan>
 
     public Optional<LogicalRepeat<?>> getSourceRepeat() {
         return sourceRepeat;
-    }
-
-    public boolean isDistinct() {
-        return outputExpressions.equals(groupByExpressions);
     }
 
     public boolean isGenerated() {
@@ -183,9 +192,11 @@ public class LogicalAggregate<CHILD_TYPE extends Plan>
 
     @Override
     public List<Slot> computeOutput() {
-        return outputExpressions.stream()
-                .map(NamedExpression::toSlot)
-                .collect(ImmutableList.toImmutableList());
+        ImmutableList.Builder<Slot> outputSlots = ImmutableList.builderWithExpectedSize(outputExpressions.size());
+        for (NamedExpression outputExpression : outputExpressions) {
+            outputSlots.add(outputExpression.toSlot());
+        }
+        return outputSlots.build();
     }
 
     @Override
@@ -196,7 +207,6 @@ public class LogicalAggregate<CHILD_TYPE extends Plan>
     @Override
     public List<? extends Expression> getExpressions() {
         return new ImmutableList.Builder<Expression>()
-                .addAll(groupByExpressions)
                 .addAll(outputExpressions)
                 .build();
     }
@@ -260,6 +270,24 @@ public class LogicalAggregate<CHILD_TYPE extends Plan>
                 hasPushed, sourceRepeat, Optional.empty(), Optional.empty(), child());
     }
 
+    public LogicalAggregate<Plan> withGroupBy(List<Expression> groupByExprList) {
+        return new LogicalAggregate<>(groupByExprList, outputExpressions, normalized, ordinalIsResolved, generated,
+                hasPushed, sourceRepeat, Optional.empty(), Optional.empty(), child());
+    }
+
+    public LogicalAggregate<Plan> withChildGroupByAndOutput(List<Expression> groupByExprList,
+            List<NamedExpression> outputExpressionList, Plan newChild) {
+        return new LogicalAggregate<>(groupByExprList, outputExpressionList, normalized, ordinalIsResolved, generated,
+                hasPushed, sourceRepeat, Optional.empty(), Optional.empty(), newChild);
+    }
+
+    public LogicalAggregate<Plan> withChildAndOutput(CHILD_TYPE child,
+                                                       List<NamedExpression> outputExpressionList) {
+        return new LogicalAggregate<>(groupByExpressions, outputExpressionList, normalized, ordinalIsResolved,
+                generated, hasPushed, sourceRepeat, Optional.empty(),
+                Optional.empty(), child);
+    }
+
     @Override
     public List<NamedExpression> getOutputs() {
         return outputExpressions;
@@ -280,5 +308,102 @@ public class LogicalAggregate<CHILD_TYPE extends Plan>
             List<NamedExpression> normalizedOutput, Plan normalizedChild) {
         return new LogicalAggregate<>(normalizedGroupBy, normalizedOutput, true, ordinalIsResolved, generated,
                 hasPushed, sourceRepeat, Optional.empty(), Optional.empty(), normalizedChild);
+    }
+
+    private boolean isUniqueGroupByUnique(NamedExpression namedExpression) {
+        if (namedExpression.children().size() != 1) {
+            return false;
+        }
+        Expression agg = namedExpression.child(0);
+        return ExpressionUtils.isInjectiveAgg(agg)
+                && child().getLogicalProperties().getTrait().isUniqueAndNotNull(agg.getInputSlots());
+    }
+
+    private boolean isUniformGroupByUnique(NamedExpression namedExpression) {
+        if (namedExpression.children().size() != 1) {
+            return false;
+        }
+        Expression agg = namedExpression.child(0);
+        return agg instanceof Count || agg instanceof Ndv;
+    }
+
+    @Override
+    public void computeUnique(DataTrait.Builder builder) {
+        if (this.sourceRepeat.isPresent()) {
+            // roll up may generate new data
+            return;
+        }
+        DataTrait childFd = child(0).getLogicalProperties().getTrait();
+        ImmutableSet<Slot> groupByKeys = groupByExpressions.stream()
+                .map(s -> (Slot) s)
+                .collect(ImmutableSet.toImmutableSet());
+        // when group by all tuples, the result only have one row
+        if (groupByExpressions.isEmpty() || childFd.isUniformAndNotNull(groupByKeys)) {
+            getOutput().forEach(builder::addUniqueSlot);
+            return;
+        }
+
+        // propagate all unique slots
+        builder.addUniqueSlot(childFd);
+
+        // group by keys is unique
+        builder.addUniqueSlot(groupByKeys);
+
+        // group by unique may has unique aggregate result
+        if (childFd.isUniqueAndNotNull(groupByKeys)) {
+            for (NamedExpression namedExpression : getOutputExpressions()) {
+                if (isUniqueGroupByUnique(namedExpression)) {
+                    builder.addUniqueSlot(namedExpression.toSlot());
+                }
+            }
+        }
+    }
+
+    @Override
+    public void computeUniform(DataTrait.Builder builder) {
+        // always propagate uniform
+        DataTrait childFd = child(0).getLogicalProperties().getTrait();
+        builder.addUniformSlot(childFd);
+
+        if (this.sourceRepeat.isPresent()) {
+            // roll up may generate new data
+            return;
+        }
+        ImmutableSet<Slot> groupByKeys = groupByExpressions.stream()
+                .map(s -> (Slot) s)
+                .collect(ImmutableSet.toImmutableSet());
+        // when group by all tuples, the result only have one row
+        if (groupByExpressions.isEmpty() || childFd.isUniformAndNotNull(groupByKeys)) {
+            getOutput().forEach(builder::addUniformSlot);
+            return;
+        }
+
+        if (childFd.isUniqueAndNotNull(groupByKeys)) {
+            for (NamedExpression namedExpression : getOutputExpressions()) {
+                if (isUniformGroupByUnique(namedExpression)) {
+                    builder.addUniformSlot(namedExpression.toSlot());
+                }
+            }
+        }
+    }
+
+    @Override
+    public void computeEqualSet(DataTrait.Builder builder) {
+        builder.addEqualSet(child().getLogicalProperties().getTrait());
+    }
+
+    @Override
+    public void computeFd(DataTrait.Builder builder) {
+        builder.addFuncDepsDG(child().getLogicalProperties().getTrait());
+    }
+
+    /** supportAggregatePhase */
+    public boolean supportAggregatePhase(AggregatePhase aggregatePhase) {
+        for (AggregateFunction aggregateFunction : getAggregateFunctions()) {
+            if (!aggregateFunction.supportAggregatePhase(aggregatePhase)) {
+                return false;
+            }
+        }
+        return true;
     }
 }

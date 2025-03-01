@@ -1,4 +1,3 @@
-
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
@@ -37,7 +36,9 @@ class VOdbcTableWriter final : public AsyncResultWriter, public ODBCConnector {
 public:
     static ODBCConnectorParam create_connect_param(const TDataSink&);
 
-    VOdbcTableWriter(const doris::TDataSink& t_sink, const VExprContextSPtrs& output_exprs);
+    VOdbcTableWriter(const doris::TDataSink& t_sink, const VExprContextSPtrs& output_exprs,
+                     std::shared_ptr<pipeline::Dependency> dep,
+                     std::shared_ptr<pipeline::Dependency> fin_dep);
 
     // connect to odbc server
     Status open(RuntimeState* state, RuntimeProfile* profile) override {
@@ -45,11 +46,11 @@ public:
         return init_to_write(profile);
     }
 
-    Status append_block(vectorized::Block& block) override;
+    Status write(RuntimeState* state, vectorized::Block& block) override;
 
-    Status close() override { return ODBCConnector::close(); }
+    Status finish(RuntimeState* state) override { return ODBCConnector::finish_trans(); }
 
-    bool in_transaction() override { return TableConnector::_is_in_transaction; }
+    Status close(Status s) override { return ODBCConnector::close(s); }
 };
 } // namespace vectorized
 } // namespace doris

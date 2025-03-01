@@ -39,9 +39,9 @@
 #include "http/http_client.h"
 #include "io/fs/file_system.h"
 #include "io/fs/local_file_system.h"
+#include "runtime/exec_env.h"
 #include "util/dynamic_util.h"
 #include "util/md5.h"
-#include "util/spinlock.h"
 #include "util/string_util.h"
 
 namespace doris {
@@ -90,7 +90,6 @@ struct UserFunctionCacheEntry {
     // used to lookup a symbol
     void* lib_handle = nullptr;
 
-    SpinLock map_lock;
     // from symbol_name to function pointer
     std::unordered_map<std::string, void*> fptr_map;
 
@@ -122,8 +121,7 @@ UserFunctionCache::~UserFunctionCache() {
 }
 
 UserFunctionCache* UserFunctionCache::instance() {
-    static UserFunctionCache s_cache;
-    return &s_cache;
+    return ExecEnv::GetInstance()->user_function_cache();
 }
 
 Status UserFunctionCache::init(const std::string& lib_dir) {
@@ -200,14 +198,6 @@ Status UserFunctionCache::_load_cached_lib() {
     return Status::OK();
 }
 
-std::string get_real_symbol(const std::string& symbol) {
-    static std::regex rx1("8palo_udf");
-    std::string str1 = std::regex_replace(symbol, rx1, "9doris_udf");
-    static std::regex rx2("4palo");
-    std::string str2 = std::regex_replace(str1, rx2, "5doris");
-    return str2;
-}
-
 Status UserFunctionCache::_get_cache_entry(int64_t fid, const std::string& url,
                                            const std::string& checksum,
                                            std::shared_ptr<UserFunctionCacheEntry>& output_entry,
@@ -281,12 +271,10 @@ Status UserFunctionCache::_download_lib(const std::string& url,
         return Status::InternalError("fail to open file");
     }
 
-    std::string real_url = _get_real_url(url);
-
     Md5Digest digest;
     HttpClient client;
     int64_t file_size = 0;
-    RETURN_IF_ERROR(client.init(real_url));
+    RETURN_IF_ERROR(client.init(url));
     Status status;
     auto download_cb = [&status, &tmp_file, &fp, &digest, &file_size](const void* data,
                                                                       size_t length) {
@@ -306,11 +294,10 @@ Status UserFunctionCache::_download_lib(const std::string& url,
     digest.digest();
     if (!iequal(digest.hex(), entry->checksum)) {
         fmt::memory_buffer error_msg;
-        fmt::format_to(
-                error_msg,
-                " The checksum is not equal of {} ({}). The init info of first create entry is:"
-                "{} But download file check_sum is: {}, file_size is: {}.",
-                url, real_url, entry->debug_string(), digest.hex(), file_size);
+        fmt::format_to(error_msg,
+                       " The checksum is not equal of {}. The init info of first create entry is:"
+                       "{} But download file check_sum is: {}, file_size is: {}.",
+                       url, entry->debug_string(), digest.hex(), file_size);
         std::string error(fmt::to_string(error_msg));
         LOG(WARNING) << error;
         return Status::InternalError(error);
@@ -330,13 +317,6 @@ Status UserFunctionCache::_download_lib(const std::string& url,
     // check download
     entry->is_downloaded = true;
     return Status::OK();
-}
-
-std::string UserFunctionCache::_get_real_url(const std::string& url) {
-    if (url.find(":/") == std::string::npos) {
-        return "file://" + config::jdbc_drivers_dir + "/" + url;
-    }
-    return url;
 }
 
 std::string UserFunctionCache::_get_file_name_from_url(const std::string& url) const {

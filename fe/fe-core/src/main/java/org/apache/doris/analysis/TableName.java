@@ -21,7 +21,6 @@
 package org.apache.doris.analysis;
 
 import org.apache.doris.catalog.Env;
-import org.apache.doris.cluster.ClusterNamespace;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
@@ -30,6 +29,7 @@ import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
 import org.apache.doris.datasource.InternalCatalog;
 import org.apache.doris.persist.gson.GsonUtils;
+import org.apache.doris.qe.ConnectContext;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -39,7 +39,6 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.util.Objects;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class TableName implements Writable {
@@ -90,15 +89,29 @@ public class TableName implements Writable {
             if (Strings.isNullOrEmpty(db)) {
                 ErrorReport.reportAnalysisException(ErrorCode.ERR_NO_DB_ERROR);
             }
-        } else {
-            if (Strings.isNullOrEmpty(analyzer.getClusterName())) {
-                ErrorReport.reportAnalysisException(ErrorCode.ERR_CLUSTER_NAME_NULL);
-            }
-            db = ClusterNamespace.getFullName(analyzer.getClusterName(), db);
         }
 
         if (Strings.isNullOrEmpty(tbl)) {
             throw new AnalysisException("Table name is null");
+        }
+    }
+
+    public void analyze(ConnectContext ctx) {
+        if (Strings.isNullOrEmpty(ctl)) {
+            ctl = ctx.getDefaultCatalog();
+            if (Strings.isNullOrEmpty(ctl)) {
+                ctl = InternalCatalog.INTERNAL_CATALOG_NAME;
+            }
+        }
+        if (Strings.isNullOrEmpty(db)) {
+            db = ctx.getDatabase();
+            if (Strings.isNullOrEmpty(db)) {
+                throw new org.apache.doris.nereids.exceptions.AnalysisException("No database selected");
+            }
+        }
+
+        if (Strings.isNullOrEmpty(tbl)) {
+            throw new org.apache.doris.nereids.exceptions.AnalysisException("Table name is null");
         }
     }
 
@@ -143,19 +156,16 @@ public class TableName implements Writable {
      */
     public String[] tableAliases() {
         if (ctl == null || ctl.equals(InternalCatalog.INTERNAL_CATALOG_NAME)) {
-            return new String[] {toString(), getNoClusterString(), tbl};
+            // db.tbl
+            // tbl
+            return new String[] {toString(), tbl};
         } else {
-            return new String[] {toString(), // with cluster name
-                    getNoClusterString(), // without cluster name, legal implicit alias
-                    String.format("%s.%s", db, tbl),
-                    String.format("%s.%s", ClusterNamespace.getNameFromFullName(db), tbl), tbl};
+            // ctl.db.tbl
+            // db.tbl
+            // tbl
+            return new String[] {toString(),
+                    String.format("%s.%s", db, tbl), tbl};
         }
-    }
-
-    public String getNoClusterString() {
-        return Stream.of(InternalCatalog.INTERNAL_CATALOG_NAME.equals(ctl) ? null : ctl,
-                        ClusterNamespace.getNameFromFullName(db), tbl).filter(Objects::nonNull)
-                .collect(Collectors.joining("."));
     }
 
     @Override

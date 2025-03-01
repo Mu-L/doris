@@ -2,6 +2,55 @@
 
 This file contains version of the third-party dependency libraries in the build-env image. The docker build-env image is apache/doris, and the tag is `build-env-${version}`
 
+## 20250225
+
+- Modified: hadoop-libs 3.3.6.4 -> 3.3.6.5
+
+## 20250123
+
+- Added: icu 75-1, develop ICU tokenizer based on ICU library.
+
+## 20241031
+
+- Modified: hadoop-libs 3.3.6.3 -> 3.3.6.4
+
+## 20240815
+
+- Modified: arrow 15.0.2 -> 17.0.0
+
+## 20240814
+
+- Modified: hadoop-libs 3.3.6.2 -> 3.3.6.3
+
+## 20240813
+
+- Modified: hadoop-libs 3.3.6.1 -> 3.3.6.2
+
+## 20240529
+
+- Added: azure-core 1.10.3
+
+## 20240325
+
+- Modified: arrow 13.0.0 -> 15.0.2
+
+## 20240112
+
+- Modified: hadoop libhdfs 3.3.4.6
+
+## v20231229
+
+- Added: streamvbyte 1.0.0
+
+## v20231210
+- Modified: librdkafka 1.8.2 -> 2.0.2
+
+## v20231020
+- Added: avx2neon -> 1.0.0
+
+## v20231008
+- Modified: aws sdk 1.9.211 -> 1.11.119
+
 ## v20230824
 - Modified: protobuf 3.15.0 -> 21.11
 - Modified: glog 0.4.0 -> 0.6.0

@@ -65,8 +65,8 @@ public class Exists extends SubqueryExpr {
     }
 
     @Override
-    public String toSql() {
-        return "EXISTS (SUBQUERY) " + super.toSql();
+    public String computeToSql() {
+        return "EXISTS (SUBQUERY) " + super.computeToSql();
     }
 
     @Override
@@ -94,12 +94,17 @@ public class Exists extends SubqueryExpr {
     }
 
     @Override
-    public int hashCode() {
+    public int computeHashCode() {
         return Objects.hash(this.queryPlan, this.isNot);
     }
 
     @Override
     public Expression withTypeCoercion(DataType dataType) {
         return this;
+    }
+
+    @Override
+    public Exists withSubquery(LogicalPlan subquery) {
+        return new Exists(subquery, correlateSlots, typeCoercionExpr, isNot);
     }
 }

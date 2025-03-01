@@ -29,75 +29,74 @@
 namespace doris {
 class PValues;
 class JsonbValue;
-
+#include "common/compile_check_begin.h"
 namespace vectorized {
 class IColumn;
 class Arena;
 
 class DataTypeObjectSerDe : public DataTypeSerDe {
 public:
-    void serialize_one_cell_to_text(const IColumn& column, int row_num, BufferWritable& bw,
-                                    FormatOptions& options) const override {
-        throw doris::Exception(ErrorCode::NOT_IMPLEMENTED_ERROR,
-                               "serialize_one_cell_to_text with type " + column.get_name());
-    }
+    DataTypeObjectSerDe(int nesting_level = 1) : DataTypeSerDe(nesting_level) {};
 
-    void serialize_column_to_text(const IColumn& column, int start_idx, int end_idx,
-                                  BufferWritable& bw, FormatOptions& options) const override {
-        throw doris::Exception(ErrorCode::NOT_IMPLEMENTED_ERROR,
-                               "serialize_column_to_text with type " + column.get_name());
+    Status serialize_one_cell_to_json(const IColumn& column, int64_t row_num, BufferWritable& bw,
+                                      FormatOptions& options) const override;
+
+    Status serialize_column_to_json(const IColumn& column, int64_t start_idx, int64_t end_idx,
+                                    BufferWritable& bw, FormatOptions& options) const override {
+        return Status::NotSupported("serialize_column_to_json with type [{}]", column.get_name());
     }
-    Status deserialize_one_cell_from_text(IColumn& column, Slice& slice,
+    Status deserialize_one_cell_from_json(IColumn& column, Slice& slice,
                                           const FormatOptions& options) const override {
         return Status::NotSupported("deserialize_one_cell_from_text with type " +
                                     column.get_name());
     }
-    Status deserialize_column_from_text_vector(IColumn& column, std::vector<Slice>& slices,
-                                               int* num_deserialized,
+    Status deserialize_column_from_json_vector(IColumn& column, std::vector<Slice>& slices,
+                                               uint64_t* num_deserialized,
                                                const FormatOptions& options) const override {
         return Status::NotSupported("deserialize_column_from_text_vector with type " +
                                     column.get_name());
     }
 
-    Status write_column_to_pb(const IColumn& column, PValues& result, int start,
-                              int end) const override {
+    Status write_column_to_pb(const IColumn& column, PValues& result, int64_t start,
+                              int64_t end) const override {
         return Status::NotSupported("write_column_to_pb with type " + column.get_name());
     }
     Status read_column_from_pb(IColumn& column, const PValues& arg) const override {
         return Status::NotSupported("read_column_from_pb with type " + column.get_name());
     }
     void write_one_cell_to_jsonb(const IColumn& column, JsonbWriter& result, Arena* mem_pool,
-                                 int32_t col_id, int row_num) const override {
-        throw doris::Exception(ErrorCode::NOT_IMPLEMENTED_ERROR,
-                               "write_one_cell_to_jsonb with type " + column.get_name());
-    }
+                                 int32_t col_id, int64_t row_num) const override;
 
-    void read_one_cell_from_jsonb(IColumn& column, const JsonbValue* arg) const override {
-        throw doris::Exception(ErrorCode::NOT_IMPLEMENTED_ERROR,
-                               "read_one_cell_from_jsonb with type " + column.get_name());
-    }
+    void read_one_cell_from_jsonb(IColumn& column, const JsonbValue* arg) const override;
 
     void write_column_to_arrow(const IColumn& column, const NullMap* null_map,
-                               arrow::ArrayBuilder* array_builder, int start,
-                               int end) const override {
-        throw doris::Exception(ErrorCode::NOT_IMPLEMENTED_ERROR,
-                               "write_column_to_arrow with type " + column.get_name());
-    }
-    void read_column_from_arrow(IColumn& column, const arrow::Array* arrow_array, int start,
-                                int end, const cctz::time_zone& ctz) const override {
+                               arrow::ArrayBuilder* array_builder, int64_t start, int64_t end,
+                               const cctz::time_zone& ctz) const override;
+    void read_column_from_arrow(IColumn& column, const arrow::Array* arrow_array, int64_t start,
+                                int64_t end, const cctz::time_zone& ctz) const override {
         throw doris::Exception(ErrorCode::NOT_IMPLEMENTED_ERROR,
                                "read_column_from_arrow with type " + column.get_name());
     }
 
     Status write_column_to_mysql(const IColumn& column, MysqlRowBuffer<true>& row_buffer,
-                                 int row_idx, bool col_const) const override {
-        return Status::NotSupported("write_column_to_mysql with type " + column.get_name());
-    }
+                                 int64_t row_idx, bool col_const,
+                                 const FormatOptions& options) const override;
 
     Status write_column_to_mysql(const IColumn& column, MysqlRowBuffer<false>& row_buffer,
-                                 int row_idx, bool col_const) const override {
-        return Status::NotSupported("write_column_to_mysql with type " + column.get_name());
-    }
+                                 int64_t row_idx, bool col_const,
+                                 const FormatOptions& options) const override;
+
+    Status write_column_to_orc(const std::string& timezone, const IColumn& column,
+                               const NullMap* null_map, orc::ColumnVectorBatch* orc_col_batch,
+                               int64_t start, int64_t end,
+                               std::vector<StringRef>& buffer_list) const override;
+
+private:
+    template <bool is_binary_format>
+    Status _write_column_to_mysql(const IColumn& column, MysqlRowBuffer<is_binary_format>& result,
+                                  int64_t row_idx, bool col_const,
+                                  const FormatOptions& options) const;
 };
+#include "common/compile_check_end.h"
 } // namespace vectorized
 } // namespace doris

@@ -16,7 +16,11 @@
 # under the License.
 
 import argparse
+import cluster as CLUSTER
 import command
+import os.path
+import sys
+import traceback
 import utils
 
 
@@ -29,20 +33,45 @@ def parse_args():
     return ap.parse_args(), ap.format_help()
 
 
-def run(args, help):
-    timer = utils.Timer()
+def run(args, disable_log_stdout, help):
     for cmd in command.ALL_COMMANDS:
         if args.command == cmd.name:
-            return cmd.run(args)
-    timer.cancel()
+            timer = utils.Timer()
+            result = cmd.run(args)
+            if cmd.print_use_time() and not disable_log_stdout:
+                timer.show()
+            return result
     print(help)
-    return -1
-
-
-def main():
-    args, help = parse_args()
-    run(args, help)
+    return ""
 
 
 if __name__ == '__main__':
-    main()
+    args, help = parse_args()
+    verbose = getattr(args, "verbose", False)
+    if verbose:
+        utils.set_log_verbose()
+    disable_log_stdout = getattr(args, "output_json", False)
+    if disable_log_stdout:
+        log_file_name = ""
+        cluster_name = getattr(args, "NAME", "")
+        if cluster_name:
+            if type(cluster_name) == type([]):
+                cluster_name = cluster_name[0]
+            log_file_name = os.path.join(
+                CLUSTER.get_cluster_path(cluster_name), "doris-compose.log")
+        utils.set_log_to(log_file_name, False)
+
+    code = None
+    try:
+        data = run(args, disable_log_stdout, help)
+        if disable_log_stdout:
+            print(utils.pretty_json({"code": 0, "data": data}), flush=True)
+        code = 0
+    except:
+        err = traceback.format_exc()
+        if disable_log_stdout:
+            print(utils.pretty_json({"code": 1, "err": err}), flush=True)
+        else:
+            print(err, flush=True)
+        code = 1
+    sys.exit(code)

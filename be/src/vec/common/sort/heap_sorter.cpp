@@ -32,13 +32,14 @@
 #include "vec/exprs/vexpr_context.h"
 
 namespace doris {
+#include "common/compile_check_begin.h"
 class ObjectPool;
 class RowDescriptor;
 class RuntimeState;
 } // namespace doris
 
 namespace doris::vectorized {
-HeapSorter::HeapSorter(VSortExecExprs& vsort_exec_exprs, int limit, int64_t offset,
+HeapSorter::HeapSorter(VSortExecExprs& vsort_exec_exprs, int64_t limit, int64_t offset,
                        ObjectPool* pool, std::vector<bool>& is_asc_order,
                        std::vector<bool>& nulls_first, const RowDescriptor& row_desc)
         : Sorter(vsort_exec_exprs, limit, offset, pool, is_asc_order, nulls_first),
@@ -83,20 +84,19 @@ Status HeapSorter::append_block(Block* block) {
     }
     Block tmp_block = block->clone_empty();
     tmp_block.swap(*block);
-    HeapSortCursorBlockView block_view_val(std::move(tmp_block), _sort_description);
-    SharedHeapSortCursorBlockView* block_view =
-            new SharedHeapSortCursorBlockView(std::move(block_view_val));
-    block_view->ref();
-    Defer defer([&] { block_view->unref(); });
     size_t num_rows = tmp_block.rows();
+    auto block_view =
+            std::make_shared<HeapSortCursorBlockView>(std::move(tmp_block), _sort_description);
+    bool filtered = false;
     if (_heap_size == _heap->size()) {
         {
             SCOPED_TIMER(_topn_filter_timer);
-            _do_filter(block_view->value(), num_rows);
+            _do_filter(*block_view, num_rows);
         }
-        size_t remain_rows = block_view->value().block.rows();
+        size_t remain_rows = block_view->block.rows();
         _topn_filter_rows += (num_rows - remain_rows);
         COUNTER_SET(_topn_filter_rows_counter, _topn_filter_rows);
+        filtered = remain_rows == 0;
         for (size_t i = 0; i < remain_rows; ++i) {
             HeapSortCursorImpl cursor(i, block_view);
             _heap->replace_top_if_less(std::move(cursor));
@@ -115,8 +115,8 @@ Status HeapSorter::append_block(Block* block) {
             _heap->replace_top_if_less(std::move(cursor));
         }
     }
-    if (block_view->ref_count() > 1) {
-        _data_size += block_view->value().block.allocated_bytes();
+    if (!filtered) {
+        _data_size += block_view->block.allocated_bytes();
     }
     return Status::OK();
 }
@@ -144,11 +144,12 @@ Status HeapSorter::prepare_for_read() {
                 break;
             }
         }
-        for (int i = capacity - 1; i >= 0; i--) {
+        for (int64_t i = capacity - 1; i >= 0; i--) {
             auto rid = vector_to_reverse[i].row_id();
             const auto cur_block = vector_to_reverse[i].block();
+            Columns columns = cur_block->get_columns();
             for (size_t j = 0; j < num_columns; ++j) {
-                result_columns[j]->insert_from(*(cur_block->get_columns()[j]), rid);
+                result_columns[j]->insert_from(*(columns[j]), rid);
             }
         }
         _return_block = vector_to_reverse[0].block()->clone_with_columns(std::move(result_columns));
@@ -176,7 +177,7 @@ Field HeapSorter::get_top_value() {
 // need exception safety
 void HeapSorter::_do_filter(HeapSortCursorBlockView& block_view, size_t num_rows) {
     const auto& top_cursor = _heap->top();
-    const int cursor_rid = top_cursor.row_id();
+    const auto cursor_rid = top_cursor.row_id();
 
     IColumn::Filter filter(num_rows);
     for (size_t i = 0; i < num_rows; ++i) {
@@ -195,9 +196,9 @@ void HeapSorter::_do_filter(HeapSortCursorBlockView& block_view, size_t num_rows
 }
 
 Status HeapSorter::_prepare_sort_descs(Block* block) {
-    _sort_description.resize(_vsort_exec_exprs.lhs_ordering_expr_ctxs().size());
+    _sort_description.resize(_vsort_exec_exprs.ordering_expr_ctxs().size());
     for (int i = 0; i < _sort_description.size(); i++) {
-        const auto& ordering_expr = _vsort_exec_exprs.lhs_ordering_expr_ctxs()[i];
+        const auto& ordering_expr = _vsort_exec_exprs.ordering_expr_ctxs()[i];
         RETURN_IF_ERROR(ordering_expr->execute(block, &_sort_description[i].column_number));
 
         _sort_description[i].direction = _is_asc_order[i] ? 1 : -1;
@@ -212,4 +213,5 @@ size_t HeapSorter::data_size() const {
     return _data_size;
 }
 
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

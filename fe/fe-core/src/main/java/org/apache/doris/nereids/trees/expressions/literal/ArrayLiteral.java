@@ -19,23 +19,42 @@ package org.apache.doris.nereids.trees.expressions.literal;
 
 import org.apache.doris.analysis.LiteralExpr;
 import org.apache.doris.nereids.exceptions.AnalysisException;
+import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 import org.apache.doris.nereids.types.ArrayType;
 import org.apache.doris.nereids.types.DataType;
+import org.apache.doris.nereids.types.NullType;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import org.springframework.util.CollectionUtils;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
-/** ArrayLiteral */
-public class ArrayLiteral extends Literal {
+/**
+ * ArrayLiteral
+ */
+public class ArrayLiteral extends Literal implements ComparableLiteral {
 
     private final List<Literal> items;
 
+    /**
+     * construct array literal
+     */
     public ArrayLiteral(List<Literal> items) {
-        super(computeDataType(items));
-        this.items = ImmutableList.copyOf(items);
+        this(items, ArrayType.of(CollectionUtils.isEmpty(items) ? NullType.INSTANCE : items.get(0).getDataType()));
+    }
+
+    /**
+     * when items is empty, we could not get dataType from items, so we need pass dataType explicitly.
+     */
+    public ArrayLiteral(List<Literal> items, DataType dataType) {
+        super(dataType);
+        Preconditions.checkArgument(dataType instanceof ArrayType,
+                "dataType should be ArrayType, but we meet %s", dataType);
+        this.items = ImmutableList.copyOf(Objects.requireNonNull(items, "items should not null"));
     }
 
     @Override
@@ -45,17 +64,57 @@ public class ArrayLiteral extends Literal {
 
     @Override
     public LiteralExpr toLegacyLiteral() {
-        if (items.isEmpty()) {
-            return new org.apache.doris.analysis.ArrayLiteral();
-        } else {
-            LiteralExpr[] itemExprs = items.stream()
-                    .map(Literal::toLegacyLiteral)
-                    .toArray(LiteralExpr[]::new);
-            try {
-                return new org.apache.doris.analysis.ArrayLiteral(getDataType().toCatalogDataType(), itemExprs);
-            } catch (Throwable t) {
-                throw new AnalysisException(t.getMessage(), t);
+        LiteralExpr[] itemExprs = items.stream()
+                .map(Literal::toLegacyLiteral)
+                .toArray(LiteralExpr[]::new);
+        return new org.apache.doris.analysis.ArrayLiteral(getDataType().toCatalogDataType(), itemExprs);
+    }
+
+    @Override
+    public int compareTo(ComparableLiteral other) {
+        if (other instanceof ArrayLiteral) {
+            ArrayLiteral otherArray = (ArrayLiteral) other;
+            int size = Math.min(otherArray.items.size(), this.items.size());
+            for (int i = 0; i < size; i++) {
+                Literal thisItem = items.get(i);
+                Literal otherItem = otherArray.items.get(i);
+                if (!(thisItem instanceof ComparableLiteral)) {
+                    throw new RuntimeException(
+                            "array item '" + thisItem + "' (" + thisItem.dataType + ") is not comparable");
+                }
+                if (!(otherItem instanceof ComparableLiteral)) {
+                    throw new RuntimeException(
+                            "array item '" + otherItem + "' (" + otherItem.dataType + ") is not comparable");
+                }
+                int cmp = ((ComparableLiteral) thisItem).compareTo((ComparableLiteral) otherItem);
+                if (cmp != 0) {
+                    return cmp;
+                }
             }
+            return Integer.compare(this.items.size(), otherArray.items.size());
+        }
+        if (other instanceof NullLiteral) {
+            return 1;
+        }
+        if (other instanceof MaxLiteral) {
+            return -1;
+        }
+        throw new RuntimeException("Cannot compare two values with different data types: "
+                + this + " (" + dataType + ") vs " + other + " (" + ((Literal) other).dataType + ")");
+    }
+
+    @Override
+    protected Expression uncheckedCastTo(DataType targetType) throws AnalysisException {
+        if (this.dataType.equals(targetType)) {
+            return this;
+        } else if (targetType instanceof ArrayType) {
+            // we should pass dataType to constructor because arguments maybe empty
+            return new ArrayLiteral(items.stream()
+                    .map(i -> i.uncheckedCastTo(((ArrayType) targetType).getItemType()))
+                    .map(Literal.class::cast)
+                    .collect(ImmutableList.toImmutableList()), targetType);
+        } else {
+            return super.uncheckedCastTo(targetType);
         }
     }
 
@@ -64,26 +123,19 @@ public class ArrayLiteral extends Literal {
         String items = this.items.stream()
                 .map(Literal::toString)
                 .collect(Collectors.joining(", "));
-        return "array(" + items + ")";
+        return "[" + items + "]";
     }
 
     @Override
-    public String toSql() {
+    public String computeToSql() {
         String items = this.items.stream()
                 .map(Literal::toSql)
                 .collect(Collectors.joining(", "));
-        return "array(" + items + ")";
+        return "[" + items + "]";
     }
 
     @Override
     public <R, C> R accept(ExpressionVisitor<R, C> visitor, C context) {
         return visitor.visitArrayLiteral(this, context);
-    }
-
-    private static DataType computeDataType(List<Literal> items) {
-        if (items.isEmpty()) {
-            return ArrayType.SYSTEM_DEFAULT;
-        }
-        return ArrayType.of(items.get(0).dataType);
     }
 }

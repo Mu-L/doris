@@ -26,6 +26,7 @@ import org.apache.doris.common.io.Text;
 import org.apache.doris.common.io.Writable;
 import org.apache.doris.persist.gson.GsonPostProcessable;
 import org.apache.doris.persist.gson.GsonUtils;
+import org.apache.doris.qe.ConnectContext;
 
 import com.google.common.collect.Lists;
 import com.google.gson.annotations.SerializedName;
@@ -63,7 +64,7 @@ public class DefaultValueExprDef implements Writable, GsonPostProcessable {
      */
     public FunctionCallExpr getExpr(Type type) {
         List<Expr> exprs = null;
-        if (precision != null) {
+        if (precision != null && precision != 0) {
             exprs = Lists.newArrayList();
             exprs.add(new IntLiteral(precision));
         }
@@ -71,6 +72,9 @@ public class DefaultValueExprDef implements Writable, GsonPostProcessable {
         try {
             expr.analyzeImplForDefaultValue(type);
         } catch (AnalysisException e) {
+            if (ConnectContext.get() != null) {
+                ConnectContext.get().getState().reset();
+            }
             LOG.warn("analyzeImplForDefaultValue fail: {}", e);
         }
         return expr;
@@ -97,8 +101,6 @@ public class DefaultValueExprDef implements Writable, GsonPostProcessable {
 
     @Override
     public void gsonPostProcess() throws IOException {
-        if (precision == null) {
-            precision = 0L;
-        }
+        // nothing to do
     }
 }

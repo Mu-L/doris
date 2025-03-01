@@ -35,15 +35,16 @@ import org.apache.doris.thrift.TFileFormatType;
 import org.apache.doris.thrift.TFileType;
 import org.apache.doris.thrift.TStreamLoadPutRequest;
 import org.apache.doris.thrift.TUniqueId;
+import org.apache.doris.thrift.TUniqueKeyUpdateMode;
 
 import com.google.common.base.Strings;
-import com.google.common.collect.Lists;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.StringReader;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class StreamLoadTask implements LoadTaskInfo {
 
@@ -83,16 +84,19 @@ public class StreamLoadTask implements LoadTaskInfo {
     private String headerType = "";
     private List<String> hiddenColumns;
     private boolean trimDoubleQuotes = false;
-    private boolean isPartialUpdate = false;
+    private TUniqueKeyUpdateMode uniquekeyUpdateMode = TUniqueKeyUpdateMode.UPSERT;
 
     private int skipLines = 0;
     private boolean enableProfile = false;
 
     private boolean memtableOnSinkNode = false;
+    private int streamPerNode = 2;
 
     private byte enclose = 0;
 
     private byte escape = 0;
+
+    private String groupCommit;
 
     public StreamLoadTask(TUniqueId id, long txnId, TFileType fileType, TFileFormatType formatType,
             TFileCompressType compressType) {
@@ -269,7 +273,6 @@ public class StreamLoadTask implements LoadTaskInfo {
         return !Strings.isNullOrEmpty(sequenceCol);
     }
 
-
     @Override
     public String getSequenceCol() {
         return sequenceCol;
@@ -295,8 +298,18 @@ public class StreamLoadTask implements LoadTaskInfo {
     }
 
     @Override
-    public boolean isPartialUpdate() {
-        return isPartialUpdate;
+    public boolean isFixedPartialUpdate() {
+        return uniquekeyUpdateMode == TUniqueKeyUpdateMode.UPDATE_FIXED_COLUMNS;
+    }
+
+    @Override
+    public TUniqueKeyUpdateMode getUniqueKeyUpdateMode() {
+        return uniquekeyUpdateMode;
+    }
+
+    @Override
+    public boolean isFlexiblePartialUpdate() {
+        return uniquekeyUpdateMode == TUniqueKeyUpdateMode.UPDATE_FLEXIBLE_COLUMNS;
     }
 
     @Override
@@ -308,11 +321,21 @@ public class StreamLoadTask implements LoadTaskInfo {
         this.memtableOnSinkNode = memtableOnSinkNode;
     }
 
+    @Override
+    public int getStreamPerNode() {
+        return streamPerNode;
+    }
+
+    public void setStreamPerNode(int streamPerNode) {
+        this.streamPerNode = streamPerNode;
+    }
+
     public static StreamLoadTask fromTStreamLoadPutRequest(TStreamLoadPutRequest request) throws UserException {
         StreamLoadTask streamLoadTask = new StreamLoadTask(request.getLoadId(), request.getTxnId(),
                 request.getFileType(), request.getFormatType(),
                 request.getCompressType());
         streamLoadTask.setOptionalFromTSLPutRequest(request);
+        streamLoadTask.setGroupCommit(request.getGroupCommitMode());
         if (request.isSetFileSize()) {
             streamLoadTask.fileSize = request.getFileSize();
         }
@@ -358,11 +381,12 @@ public class StreamLoadTask implements LoadTaskInfo {
             headerType = request.getHeaderType();
         }
         if (request.isSetPartitions()) {
-            String[] partNames = request.getPartitions().trim().split("\\s*,\\s*");
+            String[] splitPartNames = request.getPartitions().trim().split(",");
+            List<String> partNames = Arrays.stream(splitPartNames).map(String::trim).collect(Collectors.toList());
             if (request.isSetIsTempPartition()) {
-                partitions = new PartitionNames(request.isIsTempPartition(), Lists.newArrayList(partNames));
+                partitions = new PartitionNames(request.isIsTempPartition(), partNames);
             } else {
-                partitions = new PartitionNames(false, Lists.newArrayList(partNames));
+                partitions = new PartitionNames(false, partNames);
             }
         }
         switch (request.getFileType()) {
@@ -438,11 +462,27 @@ public class StreamLoadTask implements LoadTaskInfo {
         if (request.isSetEnableProfile()) {
             enableProfile = request.isEnableProfile();
         }
-        if (request.isSetPartialUpdate()) {
-            isPartialUpdate = request.isPartialUpdate();
+        if (request.isSetUniqueKeyUpdateMode()) {
+            try {
+                uniquekeyUpdateMode = request.getUniqueKeyUpdateMode();
+            } catch (IllegalArgumentException e) {
+                throw new UserException("unknown unique_key_update_mode: "
+                        + request.getUniqueKeyUpdateMode().toString());
+            }
+        } else {
+            if (request.isSetPartialUpdate() && request.isPartialUpdate()) {
+                uniquekeyUpdateMode = TUniqueKeyUpdateMode.UPDATE_FIXED_COLUMNS;
+            } else {
+                uniquekeyUpdateMode = TUniqueKeyUpdateMode.UPSERT;
+            }
         }
         if (request.isSetMemtableOnSinkNode()) {
             this.memtableOnSinkNode = request.isMemtableOnSinkNode();
+        } else {
+            this.memtableOnSinkNode = Config.stream_load_default_memtable_on_sink_node;
+        }
+        if (request.isSetStreamPerNode()) {
+            this.streamPerNode = request.getStreamPerNode();
         }
     }
 
@@ -519,5 +559,12 @@ public class StreamLoadTask implements LoadTaskInfo {
     public double getMaxFilterRatio() {
         return maxFilterRatio;
     }
-}
 
+    public void setGroupCommit(String groupCommit) {
+        this.groupCommit = groupCommit;
+    }
+
+    public String getGroupCommit() {
+        return groupCommit;
+    }
+}

@@ -16,6 +16,10 @@
 // under the License.
 
 suite("test_export_with_s3", "p2") {
+    // open nereids
+    sql """ set enable_nereids_planner=true """
+    sql """ set enable_fallback_to_original_planner=false """
+
     
     String ak = getS3AK()
     String sk = getS3SK()
@@ -92,7 +96,8 @@ suite("test_export_with_s3", "p2") {
                 "s3.endpoint" = "${s3_endpoint}",
                 "s3.region" = "${region}",
                 "s3.secret_key"="${sk}",
-                "s3.access_key" = "${ak}"
+                "s3.access_key" = "${ak}",
+                "provider" = "${getS3Provider()}"
             );
         """
 
@@ -100,10 +105,12 @@ suite("test_export_with_s3", "p2") {
 
         // check data correctness
         order_qt_select """ select * from s3(
-                "uri" = "http://${s3_endpoint}${outfile_url.substring(4)}0.${file_suffix}",
+                "uri" = "http://${bucket}.${s3_endpoint}${outfile_url.substring(5 + bucket.length())}0.${file_suffix}",
                 "ACCESS_KEY"= "${ak}",
                 "SECRET_KEY" = "${sk}",
                 "format" = "${format}",
+                "column_separator" = ",",
+                "provider" = "${getS3Provider()}",
                 "region" = "${region}"
             );
             """

@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "gtest/gtest_pred_impl.h"
+#include "io/fs/file_reader.h"
 #include "io/fs/file_writer.h"
 #include "io/fs/local_file_system.h"
 #include "olap/primary_key_index.h"
@@ -39,57 +40,54 @@
 #include "olap/tablet_meta.h"
 #include "olap/tablet_schema.h"
 #include "olap/tablet_schema_helper.h"
+#include "runtime/exec_env.h"
 
 namespace doris {
 using namespace ErrorCode;
 
-static StorageEngine* k_engine = nullptr;
 static std::string kSegmentDir = "./ut_dir/delete_bitmap_calculator_test";
 static RowsetId rowset_id {0};
 
 using Generator = std::function<void(size_t rid, int cid, RowCursorCell& cell)>;
 
-static TabletColumn create_int_sequence_value(int32_t id, bool is_nullable = true,
-                                              bool is_bf_column = false,
-                                              bool has_bitmap_index = false) {
-    TabletColumn column;
-    column._unique_id = id;
-    column._col_name = std::to_string(id);
-    column._type = FieldType::OLAP_FIELD_TYPE_INT;
-    column._is_key = false;
-    column._is_nullable = is_nullable;
-    column._length = 4;
-    column._index_length = 4;
-    column._is_bf_column = is_bf_column;
-    column._has_bitmap_index = has_bitmap_index;
-    column.set_name(SEQUENCE_COL);
+static TabletColumnPtr create_int_sequence_value(int32_t id, bool is_nullable = true,
+                                                 bool is_bf_column = false,
+                                                 bool has_bitmap_index = false) {
+    TabletColumnPtr column = std::make_shared<TabletColumn>();
+    column->_unique_id = id;
+    column->_col_name = std::to_string(id);
+    column->_type = FieldType::OLAP_FIELD_TYPE_INT;
+    column->_is_key = false;
+    column->_is_nullable = is_nullable;
+    column->_length = 4;
+    column->_index_length = 4;
+    column->_is_bf_column = is_bf_column;
+    column->_has_bitmap_index = has_bitmap_index;
+    column->set_name(SEQUENCE_COL);
     return column;
 }
 
 class DeleteBitmapCalculatorTest : public testing::Test {
 public:
     void SetUp() override {
-        EXPECT_TRUE(io::global_local_filesystem()->delete_and_create_directory(kSegmentDir).ok());
-        doris::EngineOptions options;
-        k_engine = new StorageEngine(options);
-        StorageEngine::_s_instance = k_engine;
+        auto st = io::global_local_filesystem()->delete_directory(kSegmentDir);
+        ASSERT_TRUE(st.ok()) << st;
+        st = io::global_local_filesystem()->create_directory(kSegmentDir);
+        ASSERT_TRUE(st.ok()) << st;
+        ExecEnv::GetInstance()->set_storage_engine(
+                std::make_unique<StorageEngine>(EngineOptions {}));
     }
 
     void TearDown() override {
         EXPECT_TRUE(io::global_local_filesystem()->delete_directory(kSegmentDir).ok());
-        if (k_engine != nullptr) {
-            k_engine->stop();
-            delete k_engine;
-            k_engine = nullptr;
-        }
     }
 
-    TabletSchemaSPtr create_schema(const std::vector<TabletColumn>& columns,
+    TabletSchemaSPtr create_schema(const std::vector<TabletColumnPtr>& columns,
                                    KeysType keys_type = UNIQUE_KEYS) {
         TabletSchemaSPtr res = std::make_shared<TabletSchema>();
 
         for (auto& col : columns) {
-            res->append_column(col);
+            res->append_column(*col);
         }
         res->_keys_type = keys_type;
         return res;
@@ -105,10 +103,8 @@ public:
         io::FileWriterPtr file_writer;
         Status st = fs->create_file(path, &file_writer);
         EXPECT_TRUE(st.ok());
-        DataDir data_dir(kSegmentDir);
-        data_dir.init();
-        SegmentWriter writer(file_writer.get(), segment_id, build_schema, nullptr, &data_dir,
-                             INT32_MAX, opts, nullptr);
+        SegmentWriter writer(file_writer.get(), segment_id, build_schema, nullptr, nullptr, opts,
+                             nullptr);
         st = writer.init();
         EXPECT_TRUE(st.ok());
 
@@ -132,10 +128,9 @@ public:
         EXPECT_NE("", writer.min_encoded_key().to_string());
         EXPECT_NE("", writer.max_encoded_key().to_string());
 
-        io::FileReaderOptions reader_options(io::FileCachePolicy::NO_CACHE,
-                                             io::SegmentCachePathPolicy());
-        st = segment_v2::Segment::open(fs, path, segment_id, rowset_id, query_schema,
-                                       reader_options, res);
+        int64_t tablet_id = 100;
+        st = segment_v2::Segment::open(fs, path, tablet_id, segment_id, rowset_id, query_schema,
+                                       io::FileReaderOptions {}, res);
         EXPECT_TRUE(st.ok());
         EXPECT_EQ(nrows, (*res)->num_rows());
     }
@@ -150,7 +145,7 @@ public:
         size_t const num_columns = num_key_columns + has_sequence_col + num_value_columns;
         size_t const seq_col_idx = has_sequence_col ? num_key_columns : -1;
 
-        std::vector<TabletColumn> columns;
+        std::vector<TabletColumnPtr> columns;
 
         for (int i = 0; i < num_key_columns; ++i) {
             columns.emplace_back(create_int_key(i));
@@ -226,7 +221,7 @@ public:
         MergeIndexDeleteBitmapCalculator calculator;
         size_t seq_col_len = 0;
         if (has_sequence_col) {
-            seq_col_len = tablet_schema->column(tablet_schema->sequence_col_idx()).length();
+            seq_col_len = tablet_schema->column(tablet_schema->sequence_col_idx()).length() + 1;
         }
 
         ASSERT_TRUE(calculator.init(rowset_id, segments, seq_col_len).ok());

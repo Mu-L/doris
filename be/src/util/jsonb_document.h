@@ -77,7 +77,6 @@
 #include <string>
 #include <type_traits>
 
-// IWYU pragma: no_include <opentelemetry/common/threadlocal.h>
 #include "common/compiler_util.h" // IWYU pragma: keep
 
 // #include "util/string_parser.hpp"
@@ -178,10 +177,10 @@ public:
     static JsonbDocument* makeDocument(char* pb, uint32_t size, const JsonbValue* rval);
 
     // create an JsonbDocument object from JSONB packed bytes
-    static JsonbDocument* createDocument(const char* pb, uint32_t size);
+    static JsonbDocument* createDocument(const char* pb, size_t size);
 
     // create an JsonbValue from JSONB packed bytes
-    static JsonbValue* createValue(const char* pb, uint32_t size);
+    static JsonbValue* createValue(const char* pb, size_t size);
 
     uint8_t version() { return header_.ver_; }
 
@@ -197,27 +196,33 @@ public:
 
 public:
     bool operator==(const JsonbDocument& other) const {
-        LOG(FATAL) << "comparing between JsonbDocument is not supported";
+        assert(false);
+        return false;
     }
 
     bool operator!=(const JsonbDocument& other) const {
-        LOG(FATAL) << "comparing between JsonbDocument is not supported";
+        assert(false);
+        return false;
     }
 
     bool operator<=(const JsonbDocument& other) const {
-        LOG(FATAL) << "comparing between JsonbDocument is not supported";
+        assert(false);
+        return false;
     }
 
     bool operator>=(const JsonbDocument& other) const {
-        LOG(FATAL) << "comparing between JsonbDocument is not supported";
+        assert(false);
+        return false;
     }
 
     bool operator<(const JsonbDocument& other) const {
-        LOG(FATAL) << "comparing between JsonbDocument is not supported";
+        assert(false);
+        return false;
     }
 
     bool operator>(const JsonbDocument& other) const {
-        LOG(FATAL) << "comparing between JsonbDocument is not supported";
+        assert(false);
+        return false;
     }
 
 private:
@@ -313,13 +318,13 @@ public:
 
 private:
     /// The current position in the stream.
-    const char* m_position;
+    const char* m_position = nullptr;
 
     /// The end of the stream.
     const char* const m_end;
 
     ///path leg ptr
-    char* leg_ptr;
+    char* leg_ptr = nullptr;
 
     ///path leg len
     unsigned int leg_len;
@@ -330,7 +335,7 @@ private:
 
 struct leg_info {
     ///path leg ptr
-    char* leg_ptr;
+    char* leg_ptr = nullptr;
 
     ///path leg len
     unsigned int leg_len;
@@ -340,6 +345,22 @@ struct leg_info {
 
     ///type: 0 is member 1 is array
     unsigned int type;
+
+    bool to_string(std::string* str) const {
+        if (type == MEMBER_CODE) {
+            str->push_back(BEGIN_MEMBER);
+            str->append(leg_ptr, leg_len);
+            return true;
+        } else if (type == ARRAY_CODE) {
+            str->push_back(BEGIN_ARRAY);
+            std::string int_str = std::to_string(array_index);
+            str->append(int_str);
+            str->push_back(END_ARRAY);
+            return true;
+        } else {
+            return false;
+        }
+    }
 };
 
 class JsonbPath {
@@ -357,9 +378,24 @@ public:
         leg_vector.emplace_back(leg.release());
     }
 
+    void pop_leg_from_leg_vector() { leg_vector.pop_back(); }
+
+    bool to_string(std::string* res) const {
+        res->push_back(SCOPE);
+        for (const auto& leg : leg_vector) {
+            auto valid = leg->to_string(res);
+            if (!valid) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     size_t get_leg_vector_size() { return leg_vector.size(); }
 
     leg_info* get_leg_from_leg_vector(size_t i) { return leg_vector[i].get(); }
+
+    void clean() { leg_vector.clear(); }
 
 private:
     std::vector<std::unique_ptr<leg_info>> leg_vector;
@@ -446,6 +482,7 @@ typedef std::underlying_type<JsonbType>::type JsonbTypeUnder;
  */
 class JsonbKeyValue {
 public:
+    // now we use sMaxKeyId to represent an empty key
     static const int sMaxKeyId = 65535;
     typedef uint16_t keyid_type;
 
@@ -491,7 +528,7 @@ public:
     bool isNull() const { return (type_ == JsonbType::T_Null); }
     bool isTrue() const { return (type_ == JsonbType::T_True); }
     bool isFalse() const { return (type_ == JsonbType::T_False); }
-    bool isInt() const { return isInt8() || isInt16() || isInt32() || isInt64(); }
+    bool isInt() const { return isInt8() || isInt16() || isInt32() || isInt64() || isInt128(); }
     bool isInt8() const { return (type_ == JsonbType::T_Int8); }
     bool isInt16() const { return (type_ == JsonbType::T_Int16); }
     bool isInt32() const { return (type_ == JsonbType::T_Int32); }
@@ -543,6 +580,12 @@ public:
 
     // size of the value in bytes
     unsigned int size() const;
+
+    //Get the number of jsonbvalue elements
+    int length() const;
+
+    //Whether to include the jsonbvalue rhs
+    bool contains(JsonbValue* rhs) const;
 
     // get the raw byte array of the value
     const char* getValuePtr() const;
@@ -897,6 +940,40 @@ public:
         return end();
     }
 
+    // Get number of elements in object
+    int numElem() const {
+        const char* pch = payload_;
+        const char* fence = payload_ + size_;
+
+        unsigned int num = 0;
+        while (pch < fence) {
+            JsonbKeyValue* pkey = (JsonbKeyValue*)(pch);
+            ++num;
+            pch += pkey->numPackedBytes();
+        }
+
+        assert(pch == fence);
+
+        return num;
+    }
+
+    JsonbKeyValue* getJsonbKeyValue(unsigned int i) const {
+        const char* pch = payload_;
+        const char* fence = payload_ + size_;
+
+        unsigned int num = 0;
+        while (pch < fence) {
+            JsonbKeyValue* pkey = (JsonbKeyValue*)(pch);
+            if (num == i) return pkey;
+            ++num;
+            pch += pkey->numPackedBytes();
+        }
+
+        assert(pch == fence);
+
+        return nullptr;
+    }
+
     JsonbValue* find(const char* key, hDictFind handler = nullptr) const {
         return const_cast<ObjectVal*>(this)->find(key, handler);
     }
@@ -975,7 +1052,7 @@ public:
     }
 
     // Get number of elements in array
-    unsigned int numElem() const {
+    int numElem() const {
         const char* pch = payload_;
         const char* fence = payload_ + size_;
 
@@ -1061,7 +1138,7 @@ inline JsonbDocument* JsonbDocument::makeDocument(char* pb, uint32_t size, const
     return doc;
 }
 
-inline JsonbDocument* JsonbDocument::createDocument(const char* pb, uint32_t size) {
+inline JsonbDocument* JsonbDocument::createDocument(const char* pb, size_t size) {
     if (!pb || size < sizeof(JsonbHeader) + sizeof(JsonbValue)) {
         return nullptr;
     }
@@ -1083,7 +1160,7 @@ inline void JsonbDocument::setValue(const JsonbValue* value) {
     memcpy(payload_, value, value->numPackedBytes());
 }
 
-inline JsonbValue* JsonbDocument::createValue(const char* pb, uint32_t size) {
+inline JsonbValue* JsonbDocument::createValue(const char* pb, size_t size) {
     if (!pb || size < sizeof(JsonbHeader) + sizeof(JsonbValue)) {
         return nullptr;
     }
@@ -1192,6 +1269,116 @@ inline unsigned int JsonbValue::size() const {
     case JsonbType::T_False:
     default:
         return 0;
+    }
+}
+
+inline int JsonbValue::length() const {
+    switch (type_) {
+    case JsonbType::T_Int8:
+    case JsonbType::T_Int16:
+    case JsonbType::T_Int32:
+    case JsonbType::T_Int64:
+    case JsonbType::T_Double:
+    case JsonbType::T_Float:
+    case JsonbType::T_Int128:
+    case JsonbType::T_String:
+    case JsonbType::T_Binary:
+    case JsonbType::T_Null:
+    case JsonbType::T_True:
+    case JsonbType::T_False: {
+        return 1;
+    }
+    case JsonbType::T_Object: {
+        return ((ObjectVal*)this)->numElem();
+    }
+    case JsonbType::T_Array: {
+        return ((ArrayVal*)this)->numElem();
+    }
+    default:
+        return 0;
+    }
+}
+
+inline bool JsonbValue::contains(JsonbValue* rhs) const {
+    switch (type_) {
+    case JsonbType::T_Int8:
+    case JsonbType::T_Int16:
+    case JsonbType::T_Int32:
+    case JsonbType::T_Int64:
+    case JsonbType::T_Int128: {
+        return ((JsonbIntVal*)(this))->val() == ((JsonbIntVal*)(rhs))->val();
+    }
+    case JsonbType::T_Double: {
+        if (rhs->isDouble()) {
+            return ((JsonbDoubleVal*)(this))->val() == ((JsonbDoubleVal*)(rhs))->val();
+        }
+        return false;
+    }
+    case JsonbType::T_Float: {
+        if (rhs->isDouble()) {
+            return ((JsonbFloatVal*)(this))->val() == ((JsonbFloatVal*)(rhs))->val();
+        }
+        return false;
+    }
+    case JsonbType::T_String:
+    case JsonbType::T_Binary: {
+        if (rhs->isString()) {
+            auto str_value1 = (JsonbStringVal*)this;
+            auto str_value2 = (JsonbStringVal*)rhs;
+            return str_value1->length() == str_value2->length() &&
+                   std::memcmp(str_value1->getBlob(), str_value2->getBlob(),
+                               str_value1->length()) == 0;
+        }
+        return false;
+    }
+    case JsonbType::T_Array: {
+        int lhs_num = ((ArrayVal*)this)->numElem();
+        if (rhs->isArray()) {
+            int rhs_num = ((ArrayVal*)rhs)->numElem();
+            if (rhs_num > lhs_num) return false;
+            int contains_num = 0;
+            for (int i = 0; i < lhs_num; ++i) {
+                for (int j = 0; j < rhs_num; ++j) {
+                    if (((ArrayVal*)this)->get(i)->contains(((ArrayVal*)rhs)->get(j))) {
+                        contains_num++;
+                        break;
+                    }
+                }
+            }
+            return contains_num == rhs_num;
+        }
+        for (int i = 0; i < lhs_num; ++i) {
+            if (((ArrayVal*)this)->get(i)->contains(rhs)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case JsonbType::T_Object: {
+        if (rhs->isObject()) {
+            auto str_value1 = (ObjectVal*)this;
+            auto str_value2 = (ObjectVal*)rhs;
+            for (int i = 0; i < str_value2->numElem(); ++i) {
+                JsonbKeyValue* key = str_value2->getJsonbKeyValue(i);
+                JsonbValue* value = str_value1->find(key->getKeyStr(), key->klen());
+                if (key != nullptr && value != nullptr && !value->contains(key->value()))
+                    return false;
+            }
+            return true;
+        }
+        return false;
+    }
+    case JsonbType::T_Null: {
+        return rhs->isNull();
+    }
+    case JsonbType::T_True: {
+        return rhs->isTrue();
+    }
+    case JsonbType::T_False: {
+        return rhs->isFalse();
+    }
+    default:
+        return false;
     }
 }
 
@@ -1416,6 +1603,9 @@ inline bool JsonbPath::parse_member(Stream* stream, JsonbPath* path) {
             stream->skip(1);
             stream->add_leg_len();
             stream->set_has_escapes(true);
+            if (stream->exhausted()) {
+                return false;
+            }
             continue;
         } else if (stream->peek() == DOUBLE_QUOTE) {
             if (left_quotation_marks == nullptr) {

@@ -78,9 +78,9 @@ public class CTEInline extends DefaultPlanRewriter<LogicalCTEProducer<?>> implem
                 }
                 return false;
             });
-            if (ConnectContext.get().getSessionVariable().getEnablePipelineEngine()
-                    && ConnectContext.get().getSessionVariable().enableCTEMaterialize
-                    && consumers.size() > ConnectContext.get().getSessionVariable().inlineCTEReferencedThreshold) {
+            ConnectContext connectContext = ConnectContext.get();
+            if (connectContext.getSessionVariable().enableCTEMaterialize
+                    && consumers.size() > connectContext.getSessionVariable().inlineCTEReferencedThreshold) {
                 // not inline
                 Plan right = cteAnchor.right().accept(this, null);
                 return cteAnchor.withChildren(cteAnchor.left(), right);
@@ -105,8 +105,8 @@ public class CTEInline extends DefaultPlanRewriter<LogicalCTEProducer<?>> implem
                 ExprId inlineExprId = deepCopierContext.exprIdReplaceMap.get(producerSlot.getExprId());
                 List<Expression> childrenExprs = new ArrayList<>();
                 childrenExprs.add(producerSlot.withExprId(inlineExprId));
-                Alias alias = new Alias(consumerSlot.getExprId(), childrenExprs,
-                        consumerSlot.getName(), producerSlot.getQualifier());
+                Alias alias = new Alias(consumerSlot.getExprId(), childrenExprs, consumerSlot.getName(),
+                        producerSlot.getQualifier(), false);
                 projects.add(alias);
             }
             return new LogicalProject<>(projects, inlinedPlan);

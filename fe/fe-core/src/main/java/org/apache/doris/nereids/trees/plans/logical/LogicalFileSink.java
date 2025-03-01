@@ -22,7 +22,9 @@ import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
+import org.apache.doris.nereids.trees.plans.PropagateFuncDeps;
 import org.apache.doris.nereids.trees.plans.algebra.Sink;
+import org.apache.doris.nereids.trees.plans.commands.NeedAuditEncryption;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
 
 import com.google.common.base.Preconditions;
@@ -36,7 +38,8 @@ import java.util.Optional;
 /**
  * logicalFileSink for select into outfile
  */
-public class LogicalFileSink<CHILD_TYPE extends Plan> extends LogicalSink<CHILD_TYPE> implements Sink {
+public class LogicalFileSink<CHILD_TYPE extends Plan> extends LogicalSink<CHILD_TYPE>
+        implements NeedAuditEncryption, Sink, PropagateFuncDeps {
 
     private final String filePath;
     private final String format;
@@ -57,7 +60,7 @@ public class LogicalFileSink<CHILD_TYPE extends Plan> extends LogicalSink<CHILD_
         this.properties = ImmutableMap.copyOf(Objects.requireNonNull(properties));
     }
 
-    public Plan withOutputExprs(List<NamedExpression> outputExprs) {
+    public LogicalFileSink<CHILD_TYPE> withOutputExprs(List<NamedExpression> outputExprs) {
         return new LogicalFileSink<>(filePath, format, properties, outputExprs, child());
     }
 
@@ -117,5 +120,10 @@ public class LogicalFileSink<CHILD_TYPE extends Plan> extends LogicalSink<CHILD_
 
     public Map<String, String> getProperties() {
         return properties;
+    }
+
+    @Override
+    public boolean needAuditEncryption() {
+        return true;
     }
 }

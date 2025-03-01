@@ -20,9 +20,8 @@ package org.apache.doris.nereids.stats;
 import org.apache.doris.analysis.LiteralExpr;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.nereids.trees.expressions.Cast;
-import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.literal.Literal;
-import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
+import org.apache.doris.nereids.trees.expressions.visitor.DefaultExpressionVisitor;
 import org.apache.doris.nereids.types.DataType;
 import org.apache.doris.nereids.types.coercion.CharacterType;
 import org.apache.doris.statistics.ColumnStatistic;
@@ -30,6 +29,8 @@ import org.apache.doris.statistics.ColumnStatisticBuilder;
 import org.apache.doris.statistics.Statistics;
 
 import com.google.common.base.Preconditions;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /**
  * table: T(A, B)
@@ -55,18 +56,15 @@ import com.google.common.base.Preconditions;
  * for other expressions(except cast), we also need to adjust their input column stats.
  *
  */
-public class ColumnStatsAdjustVisitor extends ExpressionVisitor<ColumnStatistic, Statistics> {
-    @Override
-    public ColumnStatistic visit(Expression expr, Statistics context) {
-        expr.children().forEach(child -> child.accept(this, context));
-        return null;
-    }
+public class ColumnStatsAdjustVisitor extends DefaultExpressionVisitor<ColumnStatistic, Statistics> {
+
+    private static final Logger LOG = LogManager.getLogger(ColumnStatsAdjustVisitor.class);
 
     @Override
     public ColumnStatistic visitCast(Cast cast, Statistics context) {
         ColumnStatistic colStats = context.findColumnStatistics(cast);
 
-        if (colStats != null) {
+        if (colStats != null && colStats.minExpr != null && colStats.maxExpr != null) {
             try {
                 DataType childNereidsType = cast.child().getDataType();
                 if (childNereidsType instanceof CharacterType) {
@@ -88,7 +86,7 @@ public class ColumnStatsAdjustVisitor extends ExpressionVisitor<ColumnStatistic,
                     context.addColumnStats(cast.child(), colStats);
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.info("error", e);
                 Preconditions.checkArgument(false, "type conversion failed");
             }
         }

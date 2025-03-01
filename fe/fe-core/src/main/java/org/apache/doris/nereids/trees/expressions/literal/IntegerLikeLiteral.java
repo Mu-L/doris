@@ -19,8 +19,10 @@ package org.apache.doris.nereids.trees.expressions.literal;
 
 import org.apache.doris.nereids.types.DataType;
 
+import java.math.BigDecimal;
+
 /** IntegralLiteral */
-public abstract class IntegerLikeLiteral extends Literal {
+public abstract class IntegerLikeLiteral extends NumericLiteral {
     /**
      * Constructor for Literal.
      *
@@ -36,6 +38,11 @@ public abstract class IntegerLikeLiteral extends Literal {
 
     public long getLongValue() {
         return getNumber().longValue();
+    }
+
+    @Override
+    public BigDecimal getBigDecimalValue() {
+        return new BigDecimal(getLongValue());
     }
 
     public abstract Number getNumber();

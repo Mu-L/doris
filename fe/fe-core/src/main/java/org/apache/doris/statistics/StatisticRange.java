@@ -44,14 +44,22 @@ public class StatisticRange {
 
     private final DataType dataType;
 
+    private final boolean isEmpty;
+
     public StatisticRange(double low, LiteralExpr lowExpr, double high, LiteralExpr highExpr,
                           double distinctValues, DataType dataType) {
+        this(low, lowExpr, high, highExpr, distinctValues, dataType, false);
+    }
+
+    private StatisticRange(double low, LiteralExpr lowExpr, double high, LiteralExpr highExpr,
+                          double distinctValues, DataType dataType, boolean isEmpty) {
         this.low = low;
         this.lowExpr = lowExpr;
         this.high = high;
         this.highExpr = highExpr;
         this.distinctValues = distinctValues;
         this.dataType = dataType;
+        this.isEmpty = isEmpty;
     }
 
     public LiteralExpr getLowExpr() {
@@ -100,15 +108,28 @@ public class StatisticRange {
     }
 
     public static StatisticRange empty(DataType dataType) {
-        return new StatisticRange(Double.NaN, null, Double.NaN, null, 0, dataType);
+        return new StatisticRange(Double.NEGATIVE_INFINITY, null, Double.POSITIVE_INFINITY,
+                null, 0, dataType, true);
     }
 
     public boolean isEmpty() {
-        return Double.isNaN(low) && Double.isNaN(high);
+        return isEmpty;
     }
 
     public boolean isBothInfinite() {
         return Double.isInfinite(low) && Double.isInfinite(high);
+    }
+
+    public boolean isInfinite() {
+        return Double.isInfinite(low) || Double.isInfinite(high);
+    }
+
+    public boolean isOneSideInfinite() {
+        return isInfinite() && !isBothInfinite();
+    }
+
+    public boolean isFinite() {
+        return Double.isFinite(low) && Double.isFinite(high);
     }
 
     public static StatisticRange from(ColumnStatistic colStats, DataType dataType) {
@@ -129,6 +150,10 @@ public class StatisticRange {
     }
 
     public StatisticRange intersect(StatisticRange other) {
+        return intersect(other, false);
+    }
+
+    public StatisticRange intersect(StatisticRange other, boolean partial) {
         Pair<Double, LiteralExpr> biggerLow = maxPair(low, lowExpr, other.low, other.lowExpr);
         double newLow = biggerLow.first;
         LiteralExpr newLowExpr = biggerLow.second;
@@ -137,8 +162,8 @@ public class StatisticRange {
         double newHigh = smallerHigh.first;
         LiteralExpr newHighExpr = smallerHigh.second;
         if (newLow <= newHigh) {
-            return new StatisticRange(newLow, newLowExpr, newHigh, newHighExpr,
-                    overlappingDistinctValues(other), dataType);
+            double distinctValues = overlappingDistinctValues(other, partial);
+            return new StatisticRange(newLow, newLowExpr, newHigh, newHighExpr, distinctValues, dataType);
         }
         return empty(dataType);
     }
@@ -157,25 +182,6 @@ public class StatisticRange {
         return Pair.of(r2, e2);
     }
 
-    public StatisticRange cover(StatisticRange other) {
-        // double newLow = Math.max(low, other.low);
-        // double newHigh = Math.min(high, other.high);
-        Pair<Double, LiteralExpr> biggerLow = maxPair(low, lowExpr, other.low, other.lowExpr);
-        double newLow = biggerLow.first;
-        LiteralExpr newLowExpr = biggerLow.second;
-        Pair<Double, LiteralExpr> smallerHigh = minPair(high, highExpr, other.high, other.highExpr);
-        double newHigh = smallerHigh.first;
-        LiteralExpr newHighExpr = smallerHigh.second;
-
-        if (newLow <= newHigh) {
-            double overlapPercentOfLeft = overlapPercentWith(other);
-            double overlapDistinctValuesLeft = overlapPercentOfLeft * distinctValues;
-            double coveredDistinctValues = minExcludeNaN(distinctValues, overlapDistinctValuesLeft);
-            return new StatisticRange(newLow, newLowExpr, newHigh, newHighExpr, coveredDistinctValues, dataType);
-        }
-        return empty(dataType);
-    }
-
     public StatisticRange union(StatisticRange other) {
         double overlapPercentThis = this.overlapPercentWith(other);
         double overlapPercentOther = other.overlapPercentWith(this);
@@ -190,15 +196,33 @@ public class StatisticRange {
                 biggerHigh.first, biggerHigh.second, newNDV, dataType);
     }
 
-    private double overlappingDistinctValues(StatisticRange other) {
-        double overlapPercentOfLeft = overlapPercentWith(other);
-        double overlapPercentOfRight = other.overlapPercentWith(this);
-        double overlapDistinctValuesLeft = overlapPercentOfLeft * distinctValues;
-        double overlapDistinctValuesRight = overlapPercentOfRight * other.distinctValues;
-        double minInputDistinctValues = minExcludeNaN(this.distinctValues, other.distinctValues);
+    private double overlappingDistinctValues(StatisticRange other, boolean partial) {
+        double overlapDistinctValuesLeft;
+        if (other.isInfinite() || this.isInfinite()) {
+            overlapDistinctValuesLeft = distinctValues * INFINITE_TO_INFINITE_RANGE_INTERSECT_OVERLAP_HEURISTIC_FACTOR;
+        } else if (Math.abs(this.low - this.high) < 1e-6) {
+            overlapDistinctValuesLeft = distinctValues;
+        } else {
+            double overlapPercentOfLeft = this.overlapPercentWith(other);
+            overlapDistinctValuesLeft = overlapPercentOfLeft * distinctValues;
+        }
 
-        return minExcludeNaN(minInputDistinctValues,
-                maxExcludeNaN(overlapDistinctValuesLeft, overlapDistinctValuesRight));
+        if (partial) {
+            return overlapDistinctValuesLeft;
+        } else {
+            double overlapDistinctValuesRight;
+            if (this.isInfinite() || other.isInfinite()) {
+                overlapDistinctValuesRight = distinctValues
+                        * INFINITE_TO_INFINITE_RANGE_INTERSECT_OVERLAP_HEURISTIC_FACTOR;
+            } else if (Math.abs(other.low - other.high) < 1e-6) {
+                // other is constant
+                overlapDistinctValuesRight = distinctValues;
+            } else {
+                double overlapPercentOfRight = other.overlapPercentWith(this);
+                overlapDistinctValuesRight = overlapPercentOfRight * other.distinctValues;
+            }
+            return minExcludeNaN(overlapDistinctValuesLeft, overlapDistinctValuesRight);
+        }
     }
 
     public static double minExcludeNaN(double v1, double v2) {
@@ -225,4 +249,8 @@ public class StatisticRange {
         return distinctValues;
     }
 
+    @Override
+    public String toString() {
+        return "range=(" + lowExpr + "," + highExpr + "), ndv=" + distinctValues;
+    }
 }

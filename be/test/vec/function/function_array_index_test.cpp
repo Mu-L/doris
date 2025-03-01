@@ -16,14 +16,10 @@
 // under the License.
 
 #include <string>
-#include <vector>
 
-#include "common/status.h"
 #include "function_test_util.h"
-#include "testutil/any_type.h"
 #include "vec/core/field.h"
 #include "vec/core/types.h"
-#include "vec/data_types/data_type_nullable.h"
 #include "vec/data_types/data_type_number.h"
 
 namespace doris::vectorized {
@@ -42,7 +38,7 @@ TEST(function_array_index_test, array_contains) {
                             {{Null(), 1}, Null()},
                             {{empty_arr, 1}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<Int8>, Int8)
@@ -55,7 +51,7 @@ TEST(function_array_index_test, array_contains) {
                             {{Null(), Int8(1)}, Null()},
                             {{empty_arr, Int8(1)}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<Int64>, Int64)
@@ -68,7 +64,7 @@ TEST(function_array_index_test, array_contains) {
                             {{Null(), Int64(1)}, Null()},
                             {{empty_arr, Int64(1)}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<Int128>, Int128)
@@ -81,7 +77,7 @@ TEST(function_array_index_test, array_contains) {
                             {{Null(), Int128(1)}, Null()},
                             {{empty_arr, Int128(1)}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<Float32>, Float32)
@@ -94,7 +90,7 @@ TEST(function_array_index_test, array_contains) {
                             {{Null(), float(1)}, Null()},
                             {{empty_arr, float(1)}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<Float64>, Float64)
@@ -107,65 +103,63 @@ TEST(function_array_index_test, array_contains) {
                             {{Null(), double(1)}, Null()},
                             {{empty_arr, double(1)}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<Date>, Date)
     {
         InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Date, TypeIndex::Date};
 
-        Array vec = {str_to_date_time("2022-01-02", false), str_to_date_time("", false),
-                     str_to_date_time("2022-07-08", false)};
+        Array vec = {str_to_date_time("2022-01-02", false), str_to_date_time("2022-07-08", false)};
         DataSet data_set = {{{vec, std::string("2022-01-02")}, UInt8(1)},
-                            {{vec, std::string("")}, UInt8(1)},
                             {{vec, std::string("2022-01-03")}, UInt8(0)},
                             {{Null(), std::string("2022-01-04")}, Null()},
                             {{empty_arr, std::string("2022-01-02")}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<DateTime>, DateTime)
     {
         InputTypeSet input_types = {TypeIndex::Array, TypeIndex::DateTime, TypeIndex::DateTime};
 
-        Array vec = {str_to_date_time("2022-01-02 00:00:00"), str_to_date_time(""),
+        Array vec = {str_to_date_time("2022-01-02 00:00:00"),
                      str_to_date_time("2022-07-08 00:00:00")};
         DataSet data_set = {{{vec, std::string("2022-01-02 00:00:00")}, UInt8(1)},
-                            {{vec, std::string("")}, UInt8(1)},
                             {{vec, std::string("2022-01-03 00:00:00")}, UInt8(0)},
                             {{Null(), std::string("2022-01-04 00:00:00")}, Null()},
                             {{empty_arr, std::string("2022-01-02 00:00:00")}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
-    // array_contains(Array<Decimal128>, Decimal128)
+    // array_contains(Array<Decimal128V2>, Decimal128V2)
     {
-        InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Decimal128, TypeIndex::Decimal128};
+        InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Decimal128V2,
+                                    TypeIndex::Decimal128V2};
 
         Array vec = {ut_type::DECIMALFIELD(17014116.67), ut_type::DECIMALFIELD(-17014116.67),
                      ut_type::DECIMALFIELD(0.0)};
-        DataSet data_set = {{{vec, ut_type::DECIMAL(-17014116.67)}, UInt8(1)},
-                            {{vec, ut_type::DECIMAL(0)}, UInt8(1)},
-                            {{Null(), ut_type::DECIMAL(0)}, Null()},
-                            {{empty_arr, ut_type::DECIMAL(0)}, UInt8(0)}};
+        DataSet data_set = {{{vec, ut_type::DECIMALV2(-17014116.67)}, UInt8(1)},
+                            {{vec, ut_type::DECIMALV2(0)}, UInt8(1)},
+                            {{Null(), ut_type::DECIMALV2(0)}, Null()},
+                            {{empty_arr, ut_type::DECIMALV2(0)}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 
     // array_contains(Array<String>, String)
     {
         InputTypeSet input_types = {TypeIndex::Array, TypeIndex::String, TypeIndex::String};
 
-        Array vec = {Field("abc", 3), Field("", 0), Field("def", 3)};
+        Array vec = {Field(String("abc", 3)), Field(String("", 0)), Field(String("def", 3))};
         DataSet data_set = {{{vec, std::string("abc")}, UInt8(1)},
                             {{vec, std::string("aaa")}, UInt8(0)},
                             {{vec, std::string("")}, UInt8(1)},
                             {{Null(), std::string("abc")}, Null()},
                             {{empty_arr, std::string("")}, UInt8(0)}};
 
-        check_function<DataTypeUInt8, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeUInt8, true>(func_name, input_types, data_set));
     }
 }
 
@@ -183,7 +177,7 @@ TEST(function_array_index_test, array_position) {
                             {{Null(), 1}, Null()},
                             {{empty_arr, 1}, Int64(0)}};
 
-        check_function<DataTypeInt64, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt64, true>(func_name, input_types, data_set));
     }
 
     // array_position(Array<Int32>, Int32)
@@ -196,7 +190,7 @@ TEST(function_array_index_test, array_position) {
                             {{Null(), Int32(1)}, Null()},
                             {{empty_arr, Int32(1)}, Int64(0)}};
 
-        check_function<DataTypeInt64, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt64, true>(func_name, input_types, data_set));
     }
 
     // array_position(Array<Int8>, Int8)
@@ -209,65 +203,63 @@ TEST(function_array_index_test, array_position) {
                             {{Null(), Int8(1)}, Null()},
                             {{empty_arr, Int8(1)}, Int64(0)}};
 
-        check_function<DataTypeInt64, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt64, true>(func_name, input_types, data_set));
     }
 
     // array_position(Array<Date>, Date)
     {
         InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Date, TypeIndex::Date};
 
-        Array vec = {str_to_date_time("2022-01-02", false), str_to_date_time("", false),
-                     str_to_date_time("2022-07-08", false)};
+        Array vec = {str_to_date_time("2022-01-02", false), str_to_date_time("2022-07-08", false)};
         DataSet data_set = {{{vec, std::string("2022-01-02")}, Int64(1)},
-                            {{vec, std::string("")}, Int64(2)},
                             {{vec, std::string("2022-01-03")}, Int64(0)},
                             {{Null(), std::string("2022-01-04")}, Null()},
                             {{empty_arr, std::string("2022-01-02")}, Int64(0)}};
 
-        check_function<DataTypeInt64, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt64, true>(func_name, input_types, data_set));
     }
 
     // array_position(Array<DateTime>, DateTime)
     {
         InputTypeSet input_types = {TypeIndex::Array, TypeIndex::DateTime, TypeIndex::DateTime};
 
-        Array vec = {str_to_date_time("2022-01-02 00:00:00"), str_to_date_time(""),
+        Array vec = {str_to_date_time("2022-01-02 00:00:00"),
                      str_to_date_time("2022-07-08 00:00:00")};
         DataSet data_set = {{{vec, std::string("2022-01-02 00:00:00")}, Int64(1)},
-                            {{vec, std::string("")}, Int64(2)},
                             {{vec, std::string("2022-01-03 00:00:00")}, Int64(0)},
                             {{Null(), std::string("2022-01-04 00:00:00")}, Null()},
                             {{empty_arr, std::string("2022-01-02 00:00:00")}, Int64(0)}};
 
-        check_function<DataTypeInt64, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt64, true>(func_name, input_types, data_set));
     }
 
-    // array_position(Array<Decimal128>, Decimal128)
+    // array_position(Array<Decimal128V2>, Decimal128V2)
     {
-        InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Decimal128, TypeIndex::Decimal128};
+        InputTypeSet input_types = {TypeIndex::Array, TypeIndex::Decimal128V2,
+                                    TypeIndex::Decimal128V2};
 
         Array vec = {ut_type::DECIMALFIELD(17014116.67), ut_type::DECIMALFIELD(-17014116.67),
                      ut_type::DECIMALFIELD(0)};
-        DataSet data_set = {{{vec, ut_type::DECIMAL(-17014116.67)}, Int64(2)},
-                            {{vec, ut_type::DECIMAL(0)}, Int64(3)},
-                            {{Null(), ut_type::DECIMAL(0)}, Null()},
-                            {{empty_arr, ut_type::DECIMAL(0)}, Int64(0)}};
+        DataSet data_set = {{{vec, ut_type::DECIMALV2(-17014116.67)}, Int64(2)},
+                            {{vec, ut_type::DECIMALV2(0)}, Int64(3)},
+                            {{Null(), ut_type::DECIMALV2(0)}, Null()},
+                            {{empty_arr, ut_type::DECIMALV2(0)}, Int64(0)}};
 
-        check_function<DataTypeInt64, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt64, true>(func_name, input_types, data_set));
     }
 
     // array_position(Array<String>, String)
     {
         InputTypeSet input_types = {TypeIndex::Array, TypeIndex::String, TypeIndex::String};
 
-        Array vec = {Field("abc", 3), Field("", 0), Field("def", 3)};
+        Array vec = {Field(String("abc", 3)), Field(String("", 0)), Field(String("def", 3))};
         DataSet data_set = {{{vec, std::string("abc")}, Int64(1)},
                             {{vec, std::string("aaa")}, Int64(0)},
                             {{vec, std::string("")}, Int64(2)},
                             {{Null(), std::string("abc")}, Null()},
                             {{empty_arr, std::string("")}, Int64(0)}};
 
-        check_function<DataTypeInt64, true>(func_name, input_types, data_set);
+        static_cast<void>(check_function<DataTypeInt64, true>(func_name, input_types, data_set));
     }
 }
 

@@ -17,45 +17,99 @@
 
 #include "exchange_source_operator.h"
 
+#include <fmt/core.h>
+
+#include <cstdint>
 #include <memory>
 
 #include "pipeline/exec/operator.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
+#include "util/defer_op.h"
 #include "vec/common/sort/vsort_exec_exprs.h"
-#include "vec/exec/vexchange_node.h"
 #include "vec/exprs/vexpr_context.h"
 #include "vec/runtime/vdata_stream_mgr.h"
 #include "vec/runtime/vdata_stream_recvr.h"
 
 namespace doris::pipeline {
-
-OPERATOR_CODE_GENERATOR(ExchangeSourceOperator, SourceOperator)
-
-bool ExchangeSourceOperator::can_read() {
-    return _node->_stream_recvr->ready_to_read();
-}
-
-bool ExchangeSourceOperator::is_pending_finish() const {
-    return false;
-}
-
+#include "common/compile_check_begin.h"
 ExchangeLocalState::ExchangeLocalState(RuntimeState* state, OperatorXBase* parent)
-        : PipelineXLocalState<>(state, parent), num_rows_skipped(0), is_ready(false) {}
+        : Base(state, parent), num_rows_skipped(0), is_ready(false) {}
+
+std::string ExchangeLocalState::debug_string(int indentation_level) const {
+    fmt::memory_buffer debug_string_buffer;
+    fmt::format_to(debug_string_buffer, "{}", Base::debug_string(indentation_level));
+    fmt::format_to(debug_string_buffer, ", Queues: (");
+    const auto& queues = stream_recvr->sender_queues();
+    for (size_t i = 0; i < queues.size(); i++) {
+        fmt::format_to(debug_string_buffer,
+                       "No. {} queue: (_num_remaining_senders = {}, block_queue size = {})", i,
+                       queues[i]->_num_remaining_senders, queues[i]->_block_queue.size());
+    }
+    fmt::format_to(debug_string_buffer, ")");
+    return fmt::to_string(debug_string_buffer);
+}
+
+std::string ExchangeSourceOperatorX::debug_string(int indentation_level) const {
+    fmt::memory_buffer debug_string_buffer;
+    fmt::format_to(debug_string_buffer, "{}",
+                   OperatorX<ExchangeLocalState>::debug_string(indentation_level));
+    fmt::format_to(debug_string_buffer, ", Info: (_num_senders = {}, _is_merging = {})",
+                   _num_senders, _is_merging);
+    return fmt::to_string(debug_string_buffer);
+}
 
 Status ExchangeLocalState::init(RuntimeState* state, LocalStateInfo& info) {
-    RETURN_IF_ERROR(PipelineXLocalState<>::init(state, info));
-    stream_recvr = info.recvr;
-    RETURN_IF_ERROR(_parent->cast<ExchangeSourceOperatorX>()._vsort_exec_exprs.clone(
-            state, vsort_exec_exprs));
+    RETURN_IF_ERROR(Base::init(state, info));
+    SCOPED_TIMER(exec_time_counter());
+    SCOPED_TIMER(_init_timer);
+    auto& p = _parent->cast<ExchangeSourceOperatorX>();
+    stream_recvr = state->exec_env()->vstream_mgr()->create_recvr(
+            state, _memory_used_counter, state->fragment_instance_id(), p.node_id(),
+            p.num_senders(), profile(), p.is_merging(),
+            std::max(20480, config::exchg_node_buffer_size_bytes /
+                                    (p.is_merging() ? p.num_senders() : 1)));
+    const auto& queues = stream_recvr->sender_queues();
+    deps.resize(queues.size());
+    metrics.resize(queues.size());
+    static const std::string timer_name = "WaitForDependencyTime";
+    _wait_for_dependency_timer = ADD_TIMER_WITH_LEVEL(_runtime_profile, timer_name, 1);
+    for (size_t i = 0; i < queues.size(); i++) {
+        deps[i] = Dependency::create_shared(_parent->operator_id(), _parent->node_id(),
+                                            fmt::format("SHUFFLE_DATA_DEPENDENCY_{}", i));
+        queues[i]->set_dependency(deps[i]);
+        metrics[i] = _runtime_profile->add_nonzero_counter(fmt::format("WaitForData{}", i),
+                                                           TUnit ::TIME_NS, timer_name, 1);
+    }
+
+    get_data_from_recvr_timer = ADD_TIMER(_runtime_profile, "GetDataFromRecvrTime");
+    filter_timer = ADD_TIMER(_runtime_profile, "FilterTime");
+    create_merger_timer = ADD_TIMER(_runtime_profile, "CreateMergerTime");
+    _runtime_profile->add_info_string("InstanceID", print_id(state->fragment_instance_id()));
+
+    return Status::OK();
+}
+
+Status ExchangeLocalState::open(RuntimeState* state) {
+    SCOPED_TIMER(exec_time_counter());
+    SCOPED_TIMER(_open_timer);
+    RETURN_IF_ERROR(Base::open(state));
+    auto& p = _parent->cast<ExchangeSourceOperatorX>();
+    if (p.is_merging()) {
+        RETURN_IF_ERROR(p._vsort_exec_exprs.clone(state, vsort_exec_exprs));
+    }
     return Status::OK();
 }
 
 ExchangeSourceOperatorX::ExchangeSourceOperatorX(ObjectPool* pool, const TPlanNode& tnode,
-                                                 const DescriptorTbl& descs, int num_senders)
-        : OperatorXBase(pool, tnode, descs),
+                                                 int operator_id, const DescriptorTbl& descs,
+                                                 int num_senders)
+        : OperatorX<ExchangeLocalState>(pool, tnode, operator_id, descs),
           _num_senders(num_senders),
           _is_merging(tnode.exchange_node.__isset.sort_info),
+          _partition_type(tnode.exchange_node.__isset.partition_type
+                                  ? tnode.exchange_node.partition_type
+                                  : TPartitionType::UNPARTITIONED),
           _input_row_desc(descs, tnode.exchange_node.input_row_tuples,
                           std::vector<bool>(tnode.nullable_tuples.begin(),
                                             tnode.nullable_tuples.begin() +
@@ -63,7 +117,7 @@ ExchangeSourceOperatorX::ExchangeSourceOperatorX(ObjectPool* pool, const TPlanNo
           _offset(tnode.exchange_node.__isset.offset ? tnode.exchange_node.offset : 0) {}
 
 Status ExchangeSourceOperatorX::init(const TPlanNode& tnode, RuntimeState* state) {
-    RETURN_IF_ERROR(OperatorXBase::init(tnode, state));
+    RETURN_IF_ERROR(OperatorX<ExchangeLocalState>::init(tnode, state));
     if (!_is_merging) {
         return Status::OK();
     }
@@ -75,86 +129,78 @@ Status ExchangeSourceOperatorX::init(const TPlanNode& tnode, RuntimeState* state
 }
 
 Status ExchangeSourceOperatorX::prepare(RuntimeState* state) {
-    RETURN_IF_ERROR(OperatorXBase::prepare(state));
+    RETURN_IF_ERROR(OperatorX<ExchangeLocalState>::prepare(state));
     DCHECK_GT(_num_senders, 0);
-    _sub_plan_query_statistics_recvr.reset(new QueryStatisticsRecvr());
 
     if (_is_merging) {
         RETURN_IF_ERROR(_vsort_exec_exprs.prepare(state, _row_descriptor, _row_descriptor));
-    }
-
-    return Status::OK();
-}
-
-Status ExchangeSourceOperatorX::open(RuntimeState* state) {
-    RETURN_IF_ERROR(OperatorXBase::open(state));
-    if (_is_merging) {
         RETURN_IF_ERROR(_vsort_exec_exprs.open(state));
     }
     return Status::OK();
 }
 
 Status ExchangeSourceOperatorX::get_block(RuntimeState* state, vectorized::Block* block,
-                                          SourceState& source_state) {
-    auto& local_state = state->get_local_state(id())->cast<ExchangeLocalState>();
-    SCOPED_TIMER(local_state.profile()->total_time_counter());
+                                          bool* eos) {
+    auto& local_state = get_local_state(state);
+    Defer is_eos([&]() {
+        if (*eos) {
+            local_state.stream_recvr->set_sink_dep_always_ready();
+        }
+    });
+    SCOPED_TIMER(local_state.exec_time_counter());
     if (_is_merging && !local_state.is_ready) {
+        SCOPED_TIMER(local_state.create_merger_timer);
         RETURN_IF_ERROR(local_state.stream_recvr->create_merger(
-                local_state.vsort_exec_exprs.lhs_ordering_expr_ctxs(), _is_asc_order, _nulls_first,
+                local_state.vsort_exec_exprs.ordering_expr_ctxs(), _is_asc_order, _nulls_first,
                 state->batch_size(), _limit, _offset));
         local_state.is_ready = true;
         return Status::OK();
     }
-    bool eos = false;
-    auto status = local_state.stream_recvr->get_next(block, &eos);
-    RETURN_IF_ERROR(doris::vectorized::VExprContext::filter_block(local_state.conjuncts(), block,
-                                                                  block->columns()));
+    {
+        SCOPED_TIMER(local_state.get_data_from_recvr_timer);
+        RETURN_IF_ERROR(local_state.stream_recvr->get_next(block, eos));
+    }
+    {
+        SCOPED_TIMER(local_state.filter_timer);
+        RETURN_IF_ERROR(doris::vectorized::VExprContext::filter_block(local_state.conjuncts(),
+                                                                      block, block->columns()));
+    }
+
     // In vsortrunmerger, it will set eos=true, and block not empty
     // so that eos==true, could not make sure that block not have valid data
-    if (!eos || block->rows() > 0) {
+    if (!*eos || block->rows() > 0) {
         if (!_is_merging) {
             if (local_state.num_rows_skipped + block->rows() < _offset) {
                 local_state.num_rows_skipped += block->rows();
                 block->set_num_rows(0);
             } else if (local_state.num_rows_skipped < _offset) {
-                auto offset = _offset - local_state.num_rows_skipped;
+                int64_t offset = _offset - local_state.num_rows_skipped;
                 local_state.num_rows_skipped = _offset;
-                block->set_num_rows(block->rows() - offset);
+                // should skip some rows
+                block->skip_num_rows(offset);
             }
         }
         if (local_state.num_rows_returned() + block->rows() < _limit) {
             local_state.add_num_rows_returned(block->rows());
         } else {
-            eos = true;
+            *eos = true;
             auto limit = _limit - local_state.num_rows_returned();
             block->set_num_rows(limit);
             local_state.set_num_rows_returned(_limit);
         }
-        COUNTER_SET(local_state.rows_returned_counter(), local_state.num_rows_returned());
     }
-    if (eos) {
-        source_state = SourceState::FINISHED;
-    }
-    return status;
-}
-
-Status ExchangeSourceOperatorX::setup_local_state(RuntimeState* state, LocalStateInfo& info) {
-    auto local_state = ExchangeLocalState::create_shared(state, this);
-    state->emplace_local_state(id(), local_state);
-    return local_state->init(state, info);
-}
-
-bool ExchangeSourceOperatorX::can_read(RuntimeState* state) {
-    return state->get_local_state(id())->cast<ExchangeLocalState>().stream_recvr->ready_to_read();
-}
-
-bool ExchangeSourceOperatorX::is_pending_finish(RuntimeState* /*state*/) const {
-    return false;
+    return Status::OK();
 }
 
 Status ExchangeLocalState::close(RuntimeState* state) {
+    SCOPED_TIMER(exec_time_counter());
+    SCOPED_TIMER(_close_timer);
     if (_closed) {
         return Status::OK();
+    }
+    const auto& queues = stream_recvr->sender_queues();
+    for (size_t i = 0; i < deps.size(); i++) {
+        COUNTER_SET(metrics[i], deps[i]->watcher_elapse_time());
     }
     if (stream_recvr != nullptr) {
         stream_recvr->close();
@@ -162,7 +208,7 @@ Status ExchangeLocalState::close(RuntimeState* state) {
     if (_parent->cast<ExchangeSourceOperatorX>()._is_merging) {
         vsort_exec_exprs.close(state);
     }
-    return PipelineXLocalState<>::close(state);
+    return Base::close(state);
 }
 
 Status ExchangeSourceOperatorX::close(RuntimeState* state) {
@@ -170,6 +216,6 @@ Status ExchangeSourceOperatorX::close(RuntimeState* state) {
         _vsort_exec_exprs.close(state);
     }
     _is_closed = true;
-    return OperatorXBase::close(state);
+    return OperatorX<ExchangeLocalState>::close(state);
 }
 } // namespace doris::pipeline

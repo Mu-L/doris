@@ -17,15 +17,19 @@
 
 package org.apache.doris.nereids.trees.plans.logical;
 
+import org.apache.doris.common.Pair;
 import org.apache.doris.nereids.memo.GroupExpression;
+import org.apache.doris.nereids.properties.DataTrait.Builder;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.Slot;
 import org.apache.doris.nereids.trees.expressions.SubqueryExpr;
+import org.apache.doris.nereids.trees.plans.DiffOutputInAsterisk;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.algebra.Filter;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
+import org.apache.doris.nereids.util.ExpressionUtils;
 import org.apache.doris.nereids.util.Utils;
 
 import com.google.common.base.Preconditions;
@@ -34,6 +38,7 @@ import com.google.common.collect.ImmutableSet;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -43,7 +48,8 @@ import java.util.stream.Stream;
 /**
  * Logical filter plan.
  */
-public class LogicalFilter<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_TYPE> implements Filter {
+public class LogicalFilter<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_TYPE>
+        implements Filter, DiffOutputInAsterisk {
 
     private final Set<Expression> conjuncts;
 
@@ -63,7 +69,7 @@ public class LogicalFilter<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_T
     }
 
     public List<Expression> getExpressions() {
-        return ImmutableList.of(getPredicate());
+        return ImmutableList.copyOf(conjuncts);
     }
 
     @Override
@@ -80,6 +86,11 @@ public class LogicalFilter<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_T
     @Override
     public List<Slot> computeOutput() {
         return child().getOutput();
+    }
+
+    @Override
+    public List<Slot> computeAsteriskOutput() {
+        return child().getAsteriskOutput();
     }
 
     @Override
@@ -135,5 +146,41 @@ public class LogicalFilter<CHILD_TYPE extends Plan> extends LogicalUnary<CHILD_T
 
     public LogicalFilter<Plan> withConjunctsAndChild(Set<Expression> conjuncts, Plan child) {
         return new LogicalFilter<>(conjuncts, child);
+    }
+
+    public LogicalFilter<Plan> withConjunctsAndProps(Set<Expression> conjuncts,
+            Optional<GroupExpression> groupExpression,
+            Optional<LogicalProperties> logicalProperties, Plan child) {
+        return new LogicalFilter<>(conjuncts, groupExpression, logicalProperties, child);
+    }
+
+    @Override
+    public void computeUnique(Builder builder) {
+        builder.addUniqueSlot(child(0).getLogicalProperties().getTrait());
+    }
+
+    @Override
+    public void computeUniform(Builder builder) {
+        for (Expression e : getConjuncts()) {
+            Map<Slot, Expression> uniformSlots = ExpressionUtils.extractUniformSlot(e);
+            for (Map.Entry<Slot, Expression> entry : uniformSlots.entrySet()) {
+                builder.addUniformSlotAndLiteral(entry.getKey(), entry.getValue());
+            }
+        }
+        builder.addUniformSlot(child(0).getLogicalProperties().getTrait());
+    }
+
+    @Override
+    public void computeEqualSet(Builder builder) {
+        builder.addEqualSet(child().getLogicalProperties().getTrait());
+        for (Expression expression : getConjuncts()) {
+            Optional<Pair<Slot, Slot>> equalSlot = ExpressionUtils.extractEqualSlot(expression);
+            equalSlot.ifPresent(slotSlotPair -> builder.addEqualPair(slotSlotPair.first, slotSlotPair.second));
+        }
+    }
+
+    @Override
+    public void computeFd(Builder builder) {
+        builder.addFuncDepsDG(child().getLogicalProperties().getTrait());
     }
 }

@@ -21,14 +21,18 @@ import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.util.PropertyAnalyzer;
 import org.apache.doris.resource.Tag;
+import org.apache.doris.system.SystemInfoService.HostInfo;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
+import lombok.Getter;
 
 import java.util.List;
 import java.util.Map;
 
 public class AddBackendClause extends BackendClause {
     protected Map<String, String> properties = Maps.newHashMap();
+    @Getter
     private Map<String, String> tagMap;
 
     public AddBackendClause(List<String> hostPorts) {
@@ -43,8 +47,12 @@ public class AddBackendClause extends BackendClause {
         }
     }
 
-    public Map<String, String> getTagMap() {
-        return tagMap;
+    public AddBackendClause(List<String> ids, List<HostInfo> hostPorts,
+            Map<String, String> tagMap) {
+        super(ImmutableList.of());
+        this.ids = ids;
+        this.hostInfos = hostPorts;
+        this.tagMap = tagMap;
     }
 
     @Override
@@ -69,9 +77,9 @@ public class AddBackendClause extends BackendClause {
         StringBuilder sb = new StringBuilder();
         sb.append("ADD ");
         sb.append("BACKEND ");
-        for (int i = 0; i < hostPorts.size(); i++) {
-            sb.append("\"").append(hostPorts.get(i)).append("\"");
-            if (i != hostPorts.size() - 1) {
+        for (int i = 0; i < params.size(); i++) {
+            sb.append("\"").append(params.get(i)).append("\"");
+            if (i != params.size() - 1) {
                 sb.append(", ");
             }
         }

@@ -30,12 +30,13 @@ import org.apache.doris.thrift.TBrokerFileStatus;
 import org.apache.doris.thrift.TFileType;
 import org.apache.doris.thrift.TNetworkAddress;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Maps;
-import org.apache.commons.collections.map.CaseInsensitiveMap;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -46,54 +47,69 @@ import java.util.concurrent.TimeUnit;
  */
 public class LocalTableValuedFunction extends ExternalFileTableValuedFunction {
     private static final Logger LOG = LogManager.getLogger(LocalTableValuedFunction.class);
-
     public static final String NAME = "local";
-    public static final String FILE_PATH = "file_path";
-    public static final String BACKEND_ID = "backend_id";
+    public static final String PROP_FILE_PATH = "file_path";
+    public static final String PROP_BACKEND_ID = "backend_id";
+    public static final String PROP_SHARED_STORAGE = "shared_storage";
 
     private static final ImmutableSet<String> LOCATION_PROPERTIES = new ImmutableSet.Builder<String>()
-            .add(FILE_PATH)
-            .add(BACKEND_ID)
+            .add(PROP_FILE_PATH)
             .build();
 
-    private String filePath;
+    // This backend is user specified backend for listing files, fetching file schema and executing query.
     private long backendId;
+    // This backend if for listing files and fetching file schema.
+    // If "backendId" is set, "backendIdForRequest" will be set to "backendId",
+    // otherwise, "backendIdForRequest" will be set to one of the available backends.
+    private long backendIdForRequest = -1;
+    private boolean sharedStorage = false;
 
-    public LocalTableValuedFunction(Map<String, String> params) throws AnalysisException {
-        Map<String, String> fileFormatParams = new CaseInsensitiveMap();
-        locationProperties = Maps.newHashMap();
-        for (String key : params.keySet()) {
-            if (FILE_FORMAT_PROPERTIES.contains(key.toLowerCase())) {
-                fileFormatParams.put(key, params.get(key));
-            } else if (LOCATION_PROPERTIES.contains(key.toLowerCase())) {
-                locationProperties.put(key.toLowerCase(), params.get(key));
-            } else {
-                throw new AnalysisException(key + " is invalid property");
+    public LocalTableValuedFunction(Map<String, String> properties) throws AnalysisException {
+        // 1. analyze common properties
+        Map<String, String> otherProps = super.parseCommonProperties(properties);
+
+        // 2. analyze location properties
+        for (String key : LOCATION_PROPERTIES) {
+            if (!otherProps.containsKey(key)) {
+                throw new AnalysisException(String.format("Property '%s' is required.", key));
             }
         }
+        filePath = otherProps.get(PROP_FILE_PATH);
+        backendId = Long.parseLong(otherProps.getOrDefault(PROP_BACKEND_ID, "-1"));
+        sharedStorage = Boolean.parseBoolean(otherProps.getOrDefault(PROP_SHARED_STORAGE, "false"));
 
-        if (!locationProperties.containsKey(FILE_PATH)) {
-            throw new AnalysisException(String.format("Configuration '%s' is required.", FILE_PATH));
+        // If not shared storage, backend_id is required
+        // If is shared storage, backend_id can still be set, so that we can query data on single BE node.
+        // Otherwise, if shared storage is true, we may use multi BE nodes.
+        if (backendId == -1 && !sharedStorage) {
+            throw new AnalysisException("'backend_id' is required when 'shared_storage' is false.");
         }
-        if (!locationProperties.containsKey(BACKEND_ID)) {
-            throw new AnalysisException(String.format("Configuration '%s' is required.", BACKEND_ID));
-        }
 
-        filePath = locationProperties.get(FILE_PATH);
-        backendId = Long.parseLong(locationProperties.get(BACKEND_ID));
-        parseProperties(fileFormatParams);
-
+        // 3. parse file
         getFileListFromBackend();
     }
 
     private void getFileListFromBackend() throws AnalysisException {
-        Backend be = Env.getCurrentSystemInfo().getBackend(backendId);
+        Backend be = null;
+        if (backendId != -1) {
+            be = Env.getCurrentSystemInfo().getBackend(backendId);
+            backendIdForRequest = backendId;
+        } else {
+            Preconditions.checkState(sharedStorage);
+            List<Long> beIds = Env.getCurrentSystemInfo().getAllBackendByCurrentCluster(true);
+            if (beIds.isEmpty()) {
+                throw new AnalysisException("No available backend");
+            }
+            Collections.shuffle(beIds);
+            be = Env.getCurrentSystemInfo().getBackend(beIds.get(0));
+            backendIdForRequest = be.getId();
+        }
         if (be == null) {
             throw new AnalysisException("backend not found with backend_id = " + backendId);
         }
 
         BackendServiceProxy proxy = BackendServiceProxy.getInstance();
-        TNetworkAddress address = be.getBrpcAdress();
+        TNetworkAddress address = be.getBrpcAddress();
         InternalService.PGlobRequest.Builder requestBuilder = InternalService.PGlobRequest.newBuilder();
         requestBuilder.setPattern(filePath);
         try {
@@ -139,7 +155,6 @@ public class LocalTableValuedFunction extends ExternalFileTableValuedFunction {
 
     @Override
     protected Backend getBackend() {
-        return Env.getCurrentSystemInfo().getBackend(backendId);
+        return Env.getCurrentSystemInfo().getBackend(backendIdForRequest);
     }
 }
-

@@ -18,12 +18,13 @@
 package org.apache.doris.nereids.rules.rewrite;
 
 import org.apache.doris.nereids.exceptions.AnalysisException;
+import org.apache.doris.nereids.hint.DistributeHint;
 import org.apache.doris.nereids.rules.Rule;
 import org.apache.doris.nereids.rules.RuleType;
 import org.apache.doris.nereids.trees.expressions.AssertNumRowsElement;
 import org.apache.doris.nereids.trees.expressions.EqualTo;
 import org.apache.doris.nereids.trees.expressions.Expression;
-import org.apache.doris.nereids.trees.plans.JoinHint;
+import org.apache.doris.nereids.trees.plans.DistributeType;
 import org.apache.doris.nereids.trees.plans.JoinType;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.logical.LogicalApply;
@@ -44,7 +45,10 @@ public class ScalarApplyToJoin extends OneRewriteRuleFactory {
     @Override
     public Rule build() {
         return logicalApply().when(LogicalApply::isScalar).then(apply -> {
-            if (apply.isCorrelated()) {
+            // apply.isCorrelated() only check if correlated slot exits
+            // but correlation filter may be eliminated by SimplifyConflictCompound rule
+            // so we need check both correlated slot and correlation filter exists before creating LogicalJoin node
+            if (apply.isCorrelated() && apply.getCorrelationFilter().isPresent()) {
                 return correlatedToJoin(apply);
             } else {
                 return unCorrelatedToJoin(apply);
@@ -53,18 +57,15 @@ public class ScalarApplyToJoin extends OneRewriteRuleFactory {
     }
 
     private Plan unCorrelatedToJoin(LogicalApply apply) {
-        LogicalAssertNumRows assertNumRows = new LogicalAssertNumRows<>(
-                new AssertNumRowsElement(
-                        1, apply.getSubqueryExpr().toString(),
-                        apply.isInProject()
-                            ? AssertNumRowsElement.Assertion.EQ : AssertNumRowsElement.Assertion.LE),
+        LogicalAssertNumRows assertNumRows = new LogicalAssertNumRows<>(new AssertNumRowsElement(1,
+                apply.getSubqueryExpr().toString(), AssertNumRowsElement.Assertion.EQ),
                 (LogicalPlan) apply.right());
         return new LogicalJoin<>(JoinType.CROSS_JOIN,
                 ExpressionUtils.EMPTY_CONDITION,
                 ExpressionUtils.EMPTY_CONDITION,
-                JoinHint.NONE,
+                new DistributeHint(DistributeType.NONE),
                 apply.getMarkJoinSlotReference(),
-                (LogicalPlan) apply.left(), assertNumRows);
+                (LogicalPlan) apply.left(), assertNumRows, null);
     }
 
     private Plan correlatedToJoin(LogicalApply apply) {
@@ -82,12 +83,11 @@ public class ScalarApplyToJoin extends OneRewriteRuleFactory {
         }
 
         return new LogicalJoin<>(
-                apply.isNeedAddSubOutputToProjects() ? JoinType.LEFT_OUTER_JOIN
-                        : JoinType.LEFT_SEMI_JOIN,
+                apply.isNeedAddSubOutputToProjects() ? JoinType.LEFT_OUTER_JOIN : JoinType.LEFT_SEMI_JOIN,
                 ExpressionUtils.EMPTY_CONDITION,
                 ExpressionUtils.extractConjunction(correlationFilter.get()),
-                JoinHint.NONE,
+                new DistributeHint(DistributeType.NONE),
                 apply.getMarkJoinSlotReference(),
-                apply.children());
+                apply.children(), null);
     }
 }

@@ -19,36 +19,38 @@ package org.apache.doris.nereids.trees.expressions.functions.agg;
 
 import org.apache.doris.catalog.FunctionSignature;
 import org.apache.doris.nereids.trees.expressions.Expression;
-import org.apache.doris.nereids.trees.expressions.functions.AlwaysNotNullable;
 import org.apache.doris.nereids.trees.expressions.functions.ExplicitlyCastableSignature;
+import org.apache.doris.nereids.trees.expressions.literal.StringLiteral;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
-import org.apache.doris.nereids.types.ArrayType;
 import org.apache.doris.nereids.types.StringType;
 import org.apache.doris.nereids.util.ExpressionUtils;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 
 /** count_by_enum agg function. */
-public class CountByEnum extends AggregateFunction implements ExplicitlyCastableSignature, AlwaysNotNullable {
+public class CountByEnum extends NotNullableAggregateFunction implements ExplicitlyCastableSignature {
 
     public static final List<FunctionSignature> SIGNATURES = ImmutableList.of(
-            FunctionSignature.ret(ArrayType.of(StringType.INSTANCE)).args(StringType.INSTANCE)
+            FunctionSignature.ret(StringType.INSTANCE).varArgs(StringType.INSTANCE)
     );
 
-    /**
-     * constructor with 1 or more arguments.
-     */
-    public CountByEnum(Expression arg, Expression... varArgs) {
-        super("count_by_enum", ExpressionUtils.mergeArguments(arg, varArgs));
+    public CountByEnum(Expression arg0, Expression... varArgs) {
+        super("count_by_enum", ExpressionUtils.mergeArguments(arg0, varArgs));
+    }
+
+    public CountByEnum(boolean distinct, Expression arg0, Expression... varArgs) {
+        super("count_by_enum", distinct, ExpressionUtils.mergeArguments(arg0, varArgs));
+    }
+
+    private CountByEnum(boolean distinct, Expression... varArgs) {
+        super("count_by_enum", distinct, varArgs);
     }
 
     @Override
     public AggregateFunction withDistinctAndChildren(boolean distinct, List<Expression> children) {
-        Preconditions.checkArgument(children.size() == 1);
-        return new CollectList(distinct, children.get(0));
+        return new CountByEnum(distinct, children.toArray(new Expression[0]));
     }
 
     @Override
@@ -59,5 +61,10 @@ public class CountByEnum extends AggregateFunction implements ExplicitlyCastable
     @Override
     public List<FunctionSignature> getSignatures() {
         return SIGNATURES;
+    }
+
+    @Override
+    public Expression resultForEmptyInput() {
+        return new StringLiteral("[]");
     }
 }

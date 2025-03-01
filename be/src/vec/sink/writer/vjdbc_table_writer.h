@@ -36,7 +36,9 @@ class VJdbcTableWriter final : public AsyncResultWriter, public JdbcConnector {
 public:
     static JdbcConnectorParam create_connect_param(const TDataSink&);
 
-    VJdbcTableWriter(const TDataSink& t_sink, const VExprContextSPtrs& output_exprs);
+    VJdbcTableWriter(const TDataSink& t_sink, const VExprContextSPtrs& output_exprs,
+                     std::shared_ptr<pipeline::Dependency> dep,
+                     std::shared_ptr<pipeline::Dependency> fin_dep);
 
     // connect to jdbc server
     Status open(RuntimeState* state, RuntimeProfile* profile) override {
@@ -44,11 +46,11 @@ public:
         return init_to_write(profile);
     }
 
-    Status append_block(vectorized::Block& block) override;
+    Status write(RuntimeState* state, vectorized::Block& block) override;
 
-    Status close() override { return JdbcConnector::close(); }
+    Status finish(RuntimeState* state) override { return JdbcConnector::finish_trans(); }
 
-    bool in_transaction() override { return TableConnector::_is_in_transaction; }
+    Status close(Status s) override { return JdbcConnector::close(s); }
 
 private:
     JdbcConnectorParam _param;

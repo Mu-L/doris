@@ -17,6 +17,8 @@
 
 package org.apache.doris.nereids.trees.expressions.functions.udf;
 
+import org.apache.doris.catalog.FunctionSignature;
+import org.apache.doris.common.Pair;
 import org.apache.doris.common.util.ReflectionUtils;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.functions.BoundFunction;
@@ -52,6 +54,16 @@ public class JavaUdfBuilder extends UdfBuilder {
     }
 
     @Override
+    public List<FunctionSignature> getSignatures() {
+        return udf.getSignatures();
+    }
+
+    @Override
+    public Class<? extends BoundFunction> functionClass() {
+        return JavaUdf.class;
+    }
+
+    @Override
     public boolean canApply(List<?> arguments) {
         if ((isVarArgs && arity > arguments.size() + 1) || (!isVarArgs && arguments.size() != arity)) {
             return false;
@@ -68,14 +80,29 @@ public class JavaUdfBuilder extends UdfBuilder {
     }
 
     @Override
-    public BoundFunction build(String name, List<?> arguments) {
+    public Pair<JavaUdf, JavaUdf> build(String name, List<?> arguments) {
         List<Expression> exprs = arguments.stream().map(Expression.class::cast).collect(Collectors.toList());
         List<DataType> argTypes = udf.getSignatures().get(0).argumentsTypes;
 
         List<Expression> processedExprs = Lists.newArrayList();
         for (int i = 0; i < exprs.size(); ++i) {
-            processedExprs.add(TypeCoercionUtils.castIfNotSameType(exprs.get(i), ((DataType) argTypes.get(i))));
+            processedExprs.add(TypeCoercionUtils.castIfNotSameType(exprs.get(i), argTypes.get(i)));
         }
-        return udf.withChildren(processedExprs);
+        return Pair.ofSame(udf.withChildren(processedExprs));
+    }
+
+    @Override
+    public String parameterDisplayString() {
+        StringBuilder string = new StringBuilder("(");
+        for (int i = 0; i < udf.getArgumentsTypes().size(); ++i) {
+            if (i > 0) {
+                string.append(", ");
+            }
+            string.append(udf.getArgumentsTypes().get(i));
+            if (isVarArgs && i + 1 == udf.getArgumentsTypes().size()) {
+                string.append("...");
+            }
+        }
+        return string.append(")").toString();
     }
 }

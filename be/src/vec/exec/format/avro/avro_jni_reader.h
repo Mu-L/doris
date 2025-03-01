@@ -18,9 +18,8 @@
 #pragma once
 
 #include <rapidjson/document.h>
-#include <stddef.h>
 
-#include <memory>
+#include <cstddef>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -28,14 +27,11 @@
 
 #include "common/status.h"
 #include "exec/olap_common.h"
-#include "vec/exec/format/generic_reader.h"
-#include "vec/exec/jni_connector.h"
+#include "vec/exec/format/jni_reader.h"
 
 namespace doris {
 class RuntimeProfile;
-
 class RuntimeState;
-
 class SlotDescriptor;
 namespace vectorized {
 class Block;
@@ -44,11 +40,11 @@ struct TypeDescriptor;
 } // namespace doris
 
 namespace doris::vectorized {
-
+#include "common/compile_check_begin.h"
 /**
  * Read avro-format file
  */
-class AvroJNIReader : public GenericReader {
+class AvroJNIReader : public JniReader {
     ENABLE_FACTORY_CREATOR(AvroJNIReader);
 
 public:
@@ -74,7 +70,7 @@ public:
     Status init_fetch_table_reader(
             std::unordered_map<std::string, ColumnValueRangeType>* colname_to_value_range);
 
-    TFileType::type get_file_type();
+    TFileType::type get_file_type() const;
 
     Status init_fetch_table_schema_reader();
 
@@ -83,16 +79,11 @@ public:
 
     TypeDescriptor convert_to_doris_type(const rapidjson::Value& column_schema);
 
-    TypeDescriptor convert_complex_type(const rapidjson::Document::ConstObject child_schema);
-
 private:
-    const std::vector<SlotDescriptor*>& _file_slot_descs;
-    RuntimeState* _state;
-    RuntimeProfile* _profile;
     const TFileScanRangeParams _params;
     const TFileRangeDesc _range;
-    std::unordered_map<std::string, ColumnValueRangeType>* _colname_to_value_range;
-    std::unique_ptr<JniConnector> _jni_connector;
+    std::unordered_map<std::string, ColumnValueRangeType>* _colname_to_value_range = nullptr;
 };
 
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

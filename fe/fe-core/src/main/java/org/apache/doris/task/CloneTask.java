@@ -83,14 +83,15 @@ public class CloneTask extends AgentTask {
         TCloneReq request = new TCloneReq(tabletId, schemaHash, srcBackends);
         request.setReplicaId(replicaId);
         request.setStorageMedium(storageMedium);
-        request.setCommittedVersion(visibleVersion);
+        request.setVersion(visibleVersion);
         request.setTaskVersion(taskVersion);
+        request.setPartitionId(partitionId);
         if (taskVersion == VERSION_2) {
             request.setSrcPathHash(srcPathHash);
             request.setDestPathHash(destPathHash);
         }
         request.setTimeoutS(timeoutS);
-
+        request.setTableId(tableId);
         return request;
     }
 

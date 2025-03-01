@@ -47,6 +47,7 @@ import java.util.stream.Collectors;
  */
 public class JavaUdf extends ScalarFunction implements ExplicitlyCastableSignature, Udf {
     private final String dbName;
+    private final long functionId;
     private final TFunctionBinaryType binaryType;
     private final FunctionSignature signature;
     private final NullableMode nullableMode;
@@ -55,15 +56,19 @@ public class JavaUdf extends ScalarFunction implements ExplicitlyCastableSignatu
     private final String prepareFn;
     private final String closeFn;
     private final String checkSum;
+    private final boolean isStaticLoad;
+    private final long expirationTime;
 
     /**
      * Constructor of UDF
      */
-    public JavaUdf(String name, String dbName, TFunctionBinaryType binaryType, FunctionSignature signature,
+    public JavaUdf(String name, long functionId, String dbName, TFunctionBinaryType binaryType,
+            FunctionSignature signature,
             NullableMode nullableMode, String objectFile, String symbol, String prepareFn, String closeFn,
-            String checkSum, Expression... args) {
+            String checkSum, boolean isStaticLoad, long expirationTime, Expression... args) {
         super(name, args);
         this.dbName = dbName;
+        this.functionId = functionId;
         this.binaryType = binaryType;
         this.signature = signature;
         this.nullableMode = nullableMode;
@@ -72,6 +77,8 @@ public class JavaUdf extends ScalarFunction implements ExplicitlyCastableSignatu
         this.prepareFn = prepareFn;
         this.closeFn = closeFn;
         this.checkSum = checkSum;
+        this.isStaticLoad = isStaticLoad;
+        this.expirationTime = expirationTime;
     }
 
     @Override
@@ -100,8 +107,9 @@ public class JavaUdf extends ScalarFunction implements ExplicitlyCastableSignatu
     @Override
     public JavaUdf withChildren(List<Expression> children) {
         Preconditions.checkArgument(children.size() == this.children.size());
-        return new JavaUdf(getName(), dbName, binaryType, signature, nullableMode,
-                objectFile, symbol, prepareFn, closeFn, checkSum, children.toArray(new Expression[0]));
+        return new JavaUdf(getName(), functionId, dbName, binaryType, signature, nullableMode,
+                objectFile, symbol, prepareFn, closeFn, checkSum, isStaticLoad, expirationTime,
+                children.toArray(new Expression[0]));
     }
 
     /**
@@ -124,13 +132,13 @@ public class JavaUdf extends ScalarFunction implements ExplicitlyCastableSignatu
                         (shape) -> ImmutableList.of()))
                 .toArray(VirtualSlotReference[]::new);
 
-        JavaUdf udf = new JavaUdf(fnName, dbName, scalar.getBinaryType(), sig,
+        JavaUdf udf = new JavaUdf(fnName, scalar.getId(), dbName, scalar.getBinaryType(), sig,
                 scalar.getNullableMode(),
-                scalar.getLocation().getLocation(),
+                scalar.getLocation() == null ? null : scalar.getLocation().getLocation(),
                 scalar.getSymbolName(),
                 scalar.getPrepareFnSymbol(),
                 scalar.getCloseFnSymbol(),
-                scalar.getChecksum(),
+                scalar.getChecksum(), scalar.isStaticLoad(), scalar.getExpirationTime(),
                 virtualSlots);
 
         JavaUdfBuilder builder = new JavaUdfBuilder(udf);
@@ -151,13 +159,16 @@ public class JavaUdf extends ScalarFunction implements ExplicitlyCastableSignatu
                     signature.argumentsTypes.stream().map(DataType::toCatalogDataType).toArray(Type[]::new),
                     signature.returnType.toCatalogDataType(),
                     signature.hasVarArgs,
-                    URI.create(objectFile),
+                    objectFile == null ? null : URI.create(objectFile),
                     symbol,
                     prepareFn,
                     closeFn
             );
             expr.setNullableMode(nullableMode);
             expr.setChecksum(checkSum);
+            expr.setId(functionId);
+            expr.setStaticLoad(isStaticLoad);
+            expr.setExpirationTime(expirationTime);
             return expr;
         } catch (Exception e) {
             throw new AnalysisException(e.getMessage(), e.getCause());

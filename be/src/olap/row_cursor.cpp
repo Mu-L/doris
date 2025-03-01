@@ -28,6 +28,7 @@
 #include "olap/field.h"
 #include "olap/olap_common.h"
 #include "olap/olap_define.h"
+#include "olap/tablet_schema.h"
 #include "util/slice.h"
 
 using std::nothrow;
@@ -78,7 +79,7 @@ Status RowCursor::_init(const std::shared_ptr<Schema>& shared_schema,
     return _init(columns);
 }
 
-Status RowCursor::_init(const std::vector<TabletColumn>& schema,
+Status RowCursor::_init(const std::vector<TabletColumnPtr>& schema,
                         const std::vector<uint32_t>& columns) {
     _schema.reset(new Schema(schema, columns));
     return _init(columns);
@@ -137,7 +138,7 @@ Status RowCursor::init(TabletSchemaSPtr schema) {
     return init(schema->columns(), schema->num_columns());
 }
 
-Status RowCursor::init(const std::vector<TabletColumn>& schema) {
+Status RowCursor::init(const std::vector<TabletColumnPtr>& schema) {
     return init(schema, schema.size());
 }
 
@@ -157,7 +158,7 @@ Status RowCursor::init(TabletSchemaSPtr schema, size_t column_count) {
     return Status::OK();
 }
 
-Status RowCursor::init(const std::vector<TabletColumn>& schema, size_t column_count) {
+Status RowCursor::init(const std::vector<TabletColumnPtr>& schema, size_t column_count) {
     if (column_count > schema.size()) {
         return Status::Error<INVALID_ARGUMENT>(
                 "Input param are invalid. Column count is bigger than num_columns of schema. "
@@ -208,34 +209,6 @@ Status RowCursor::init_scan_key(TabletSchemaSPtr schema, const std::vector<std::
     RETURN_IF_ERROR(_init(shared_schema, columns));
 
     return _init_scan_key(schema, scan_keys);
-}
-
-// TODO(yingchun): parameter 'TabletSchemaSPtr  schema' is not used
-Status RowCursor::allocate_memory_for_string_type(TabletSchemaSPtr schema) {
-    // allocate memory for string type(char, varchar, hll, array)
-    // The memory allocated in this function is used in aggregate and copy function
-    if (_variable_len == 0 && _string_field_count == 0) {
-        return Status::OK();
-    }
-    DCHECK(_variable_buf == nullptr) << "allocate memory twice";
-    RETURN_IF_ERROR(_alloc_buf());
-    // init slice of char, varchar, hll type
-    char* fixed_ptr = _fixed_buf;
-    char* variable_ptr = _variable_buf;
-    char** long_text_ptr = _long_text_buf;
-    for (auto cid : _schema->column_ids()) {
-        fixed_ptr = _fixed_buf + _schema->column_offset(cid);
-        if (_schema->column(cid)->type() == FieldType::OLAP_FIELD_TYPE_STRING) {
-            Slice* slice = reinterpret_cast<Slice*>(fixed_ptr + 1);
-            _schema->mutable_column(cid)->set_long_text_buf(long_text_ptr);
-            slice->data = *(long_text_ptr);
-            slice->size = DEFAULT_TEXT_LENGTH;
-            ++long_text_ptr;
-        } else if (_variable_len > 0) {
-            variable_ptr = column_schema(cid)->allocate_memory(fixed_ptr + 1, variable_ptr);
-        }
-    }
-    return Status::OK();
 }
 
 Status RowCursor::build_max_key() {

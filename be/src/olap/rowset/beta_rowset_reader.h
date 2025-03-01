@@ -32,6 +32,7 @@
 #include "olap/rowset/rowset_reader.h"
 #include "olap/schema.h"
 #include "olap/segment_loader.h"
+#include "util/once.h"
 #include "vec/core/block.h"
 
 namespace doris {
@@ -50,11 +51,11 @@ public:
 
     Status get_segment_iterators(RowsetReaderContext* read_context,
                                  std::vector<RowwiseIteratorUPtr>* out_iters,
-                                 const RowSetSplits& rs_splits, bool use_cache = false) override;
+                                 bool use_cache = false) override;
     void reset_read_options() override;
     Status next_block(vectorized::Block* block) override;
     Status next_block_view(vectorized::BlockView* block_view) override;
-    bool support_return_data_by_ref() override { return _iterator->support_return_data_by_ref(); }
+    bool support_return_data_by_ref() override { return _is_merge_iterator(); }
 
     bool delete_flag() override { return _rowset->delete_flag(); }
 
@@ -71,37 +72,57 @@ public:
                _stats->rows_vec_cond_filtered + _stats->rows_short_circuit_cond_filtered;
     }
 
+    uint64_t merged_rows() override { return *(_read_context->merged_rows); }
+
     RowsetTypePB type() const override { return RowsetTypePB::BETA_ROWSET; }
 
     Status current_block_row_locations(std::vector<RowLocation>* locations) override {
         return _iterator->current_block_row_locations(locations);
     }
 
-    Status get_segment_num_rows(std::vector<uint32_t>* segment_num_rows) override;
-
     bool update_profile(RuntimeProfile* profile) override;
 
     RowsetReaderSharedPtr clone() override;
 
+    void set_topn_limit(size_t topn_limit) override { _topn_limit = topn_limit; }
+
 private:
+    [[nodiscard]] Status _init_iterator_once();
+    [[nodiscard]] Status _init_iterator();
     bool _should_push_down_value_predicates() const;
+    bool _is_merge_iterator() const {
+        return _read_context->need_ordered_result &&
+               _rowset->rowset_meta()->is_segments_overlapping() && _get_segment_num() > 1;
+    }
+
+    int64_t _get_segment_num() const {
+        auto [seg_start, seg_end] = _segment_offsets;
+        if (seg_start == seg_end) {
+            seg_start = 0;
+            seg_end = _rowset->num_segments();
+        }
+        return seg_end - seg_start;
+    }
+
+    DorisCallOnce<Status> _init_iter_once;
+
+    std::pair<int64_t, int64_t> _segment_offsets;
+    std::vector<RowRanges> _segment_row_ranges;
 
     SchemaSPtr _input_schema;
-    RowsetReaderContext* _context;
+    RowsetReaderContext* _read_context = nullptr;
     BetaRowsetSharedPtr _rowset;
 
     OlapReaderStatistics _owned_stats;
-    OlapReaderStatistics* _stats;
+    OlapReaderStatistics* _stats = nullptr;
 
     std::unique_ptr<RowwiseIterator> _iterator;
-
-    // make sure this handle is initialized and valid before
-    // reading data.
-    SegmentCacheHandle _segment_cache_handle;
 
     StorageReadOptions _read_options;
 
     bool _empty = false;
+    size_t _topn_limit = 0;
+    uint64_t _merged_rows = 0;
 };
 
 } // namespace doris

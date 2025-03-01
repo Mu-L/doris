@@ -17,34 +17,30 @@
 
 package org.apache.doris.udf;
 
-import org.apache.doris.catalog.PrimitiveType;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.Pair;
+import org.apache.doris.common.exception.InternalException;
 import org.apache.doris.common.exception.UdfRuntimeException;
+import org.apache.doris.common.jni.utils.JavaUdfDataType;
+import org.apache.doris.common.jni.utils.UdfClassCache;
 import org.apache.doris.common.jni.utils.UdfUtils;
-import org.apache.doris.common.jni.utils.UdfUtils.JavaUdfDataType;
+import org.apache.doris.common.jni.vec.VectorTable;
 import org.apache.doris.thrift.TJavaUdfExecutorCtorParams;
 
-import com.esotericsoftware.reflectasm.MethodAccess;
 import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import org.apache.log4j.Logger;
 
 import java.lang.reflect.Array;
-import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.net.MalformedURLException;
 import java.util.ArrayList;
+import java.util.Map;
 
 public class UdfExecutor extends BaseExecutor {
-    // private static final java.util.logging.Logger LOG =
-    // Logger.getLogger(UdfExecutor.class);
     public static final Logger LOG = Logger.getLogger(UdfExecutor.class);
-    // setup by init() and cleared by close()
-    private Method method;
-
-    private int evaluateIndex;
+    private static final String UDF_PREPARE_FUNCTION_NAME = "prepare";
+    private static final String UDF_FUNCTION_NAME = "evaluate";
 
     /**
      * Create a UdfExecutor, using parameters from a serialized thrift object. Used by
@@ -61,102 +57,54 @@ public class UdfExecutor extends BaseExecutor {
     public void close() {
         // We are now un-usable (because the class loader has been
         // closed), so null out method_ and classLoader_.
-        method = null;
-        super.close();
+        if (!isStaticLoad) {
+            super.close();
+        } else if (outputTable != null) {
+            outputTable.close();
+        }
     }
 
-    public Object[] convertBasicArguments(int argIdx, boolean isNullable, int numRows, long nullMapAddr,
-            long columnAddr, long strOffsetAddr) {
-        return convertBasicArg(true, argIdx, isNullable, 0, numRows, nullMapAddr, columnAddr, strOffsetAddr);
-    }
-
-    public Object[] convertArrayArguments(int argIdx, boolean isNullable, int numRows, long nullMapAddr,
-            long offsetsAddr, long nestedNullMapAddr, long dataAddr, long strOffsetAddr) {
-        return convertArrayArg(argIdx, isNullable, 0, numRows, nullMapAddr, offsetsAddr, nestedNullMapAddr, dataAddr,
-                strOffsetAddr);
-    }
-
-    public Object[] convertMapArguments(int argIdx, boolean isNullable, int numRows, long nullMapAddr,
-            long offsetsAddr, long keyNestedNullMapAddr, long keyDataAddr, long keyStrOffsetAddr,
-            long valueNestedNullMapAddr, long valueDataAddr, long valueStrOffsetAddr) {
-        PrimitiveType keyType = argTypes[argIdx].getKeyType().getPrimitiveType();
-        PrimitiveType valueType = argTypes[argIdx].getValueType().getPrimitiveType();
-        Object[] keyCol = convertMapArg(keyType, argIdx, isNullable, 0, numRows, nullMapAddr, offsetsAddr,
-                keyNestedNullMapAddr, keyDataAddr,
-                keyStrOffsetAddr, argTypes[argIdx].getKeyScale());
-        Object[] valueCol = convertMapArg(valueType, argIdx, isNullable, 0, numRows, nullMapAddr, offsetsAddr,
-                valueNestedNullMapAddr, valueDataAddr,
-                valueStrOffsetAddr, argTypes[argIdx].getValueScale());
-        return buildHashMap(keyType, valueType, keyCol, valueCol);
-    }
-
-    /**
-     * Evaluates the UDF with 'args' as the input to the UDF.
-     */
-    public Object[] evaluate(int numRows, Object[] column) throws UdfRuntimeException {
+    public long evaluate(Map<String, String> inputParams, Map<String, String> outputParams) throws UdfRuntimeException {
         try {
-            Object[] result = (Object[]) Array.newInstance(method.getReturnType(), numRows);
-            Object[][] inputs = (Object[][]) column;
-            Object[] parameters = new Object[inputs.length];
-            for (int i = 0; i < numRows; ++i) {
-                for (int j = 0; j < column.length; ++j) {
-                    parameters[j] = inputs[j][i];
-                }
-                result[i] = methodAccess.invoke(udf, evaluateIndex, parameters);
+            VectorTable inputTable = VectorTable.createReadableTable(inputParams);
+            int numRows = inputTable.getNumRows();
+            int numColumns = inputTable.getNumColumns();
+            if (outputTable != null) {
+                outputTable.close();
             }
-            return result;
+            outputTable = VectorTable.createWritableTable(outputParams, numRows);
+
+            // If the return type is primitive, we can't cast the array of primitive type as array of Object,
+            // so we have to new its wrapped Object.
+            Object[] result = outputTable.getColumnType(0).isPrimitive()
+                    ? outputTable.getColumn(0).newObjectContainerArray(numRows)
+                    : (Object[]) Array.newInstance(objCache.retClass, numRows);
+            Object[][] inputs = inputTable.getMaterializedData(getInputConverters(numColumns, false));
+            Object[] parameters = new Object[numColumns];
+            for (int i = 0; i < numRows; ++i) {
+                for (int j = 0; j < numColumns; ++j) {
+                    int row = inputTable.isConstColumn(j) ? 0 : i;
+                    parameters[j] = inputs[j][row];
+                }
+                result[i] = objCache.methodAccess.invoke(udf, objCache.methodIndex, parameters);
+            }
+            boolean isNullable = Boolean.parseBoolean(outputParams.getOrDefault("is_nullable", "true"));
+            outputTable.appendData(0, result, getOutputConverter(), isNullable);
+            return outputTable.getMetaAddress();
         } catch (Exception e) {
-            LOG.info("evaluate exception: " + debugString());
-            LOG.info("evaluate(int numRows, Object[] column) Exception: " + e.toString());
+            LOG.warn("evaluate exception: " + debugString(), e);
             throw new UdfRuntimeException("UDF failed to evaluate", e);
         }
     }
 
-    public void copyBatchBasicResult(boolean isNullable, int numRows, Object[] result, long nullMapAddr,
-            long resColumnAddr, long strOffsetAddr) {
-        copyBatchBasicResultImpl(isNullable, numRows, result, nullMapAddr, resColumnAddr, strOffsetAddr, getMethod());
-    }
-
-    public void copyBatchArrayResult(boolean isNullable, int numRows, Object[] result, long nullMapAddr,
-            long offsetsAddr, long nestedNullMapAddr, long dataAddr, long strOffsetAddr) {
-        Preconditions.checkState(result.length == numRows,
-                "copyBatchArrayResult result size should equal;");
-        copyBatchArrayResultImpl(isNullable, numRows, result, nullMapAddr, offsetsAddr, nestedNullMapAddr, dataAddr,
-                strOffsetAddr, retType.getItemType().getPrimitiveType(), retType.getScale());
-    }
-
-    public void copyBatchMapResult(boolean isNullable, int numRows, Object[] result, long nullMapAddr,
-            long offsetsAddr, long keyNsestedNullMapAddr, long keyDataAddr, long keyStrOffsetAddr,
-            long valueNsestedNullMapAddr, long valueDataAddr, long valueStrOffsetAddr) {
-        Preconditions.checkState(result.length == numRows,
-                "copyBatchMapResult result size should equal;");
-        PrimitiveType keyType = retType.getKeyType().getPrimitiveType();
-        PrimitiveType valueType = retType.getValueType().getPrimitiveType();
-        Object[] keyCol = new Object[result.length];
-        Object[] valueCol = new Object[result.length];
-        buildArrayListFromHashMap(result, keyType, valueType, keyCol, valueCol);
-
-        copyBatchArrayResultImpl(isNullable, numRows, valueCol, nullMapAddr, offsetsAddr, valueNsestedNullMapAddr,
-                valueDataAddr,
-                valueStrOffsetAddr, valueType, retType.getKeyScale());
-        copyBatchArrayResultImpl(isNullable, numRows, keyCol, nullMapAddr, offsetsAddr, keyNsestedNullMapAddr,
-                keyDataAddr,
-                keyStrOffsetAddr, keyType, retType.getValueScale());
-    }
-
-    /**
-     * Evaluates the UDF with 'args' as the input to the UDF.
-     */
-    private Object evaluate(Object... args) throws UdfRuntimeException {
-        try {
-            return method.invoke(udf, args);
-        } catch (Exception e) {
-            throw new UdfRuntimeException("UDF failed to evaluate", e);
+    private Method findPrepareMethod(Method[] methods) {
+        for (Method method : methods) {
+            if (method.getName().equals(UDF_PREPARE_FUNCTION_NAME) && method.getReturnType().equals(void.class)
+                    && method.getParameterCount() == 0) {
+                return method;
+            }
         }
-    }
-
-    public Method getMethod() {
-        return method;
+        return null; // Method not found
     }
 
     // Preallocate the input objects that will be passed to the underlying UDF.
@@ -164,95 +112,79 @@ public class UdfExecutor extends BaseExecutor {
     @Override
     protected void init(TJavaUdfExecutorCtorParams request, String jarPath, Type funcRetType,
             Type... parameterTypes) throws UdfRuntimeException {
-        String className = request.fn.scalar_fn.symbol;
-        ArrayList<String> signatures = Lists.newArrayList();
-        try {
-            LOG.debug("Loading UDF '" + className + "' from " + jarPath);
-            ClassLoader loader;
-            if (jarPath != null) {
-                // Save for cleanup.
-                ClassLoader parent = getClass().getClassLoader();
-                classLoader = UdfUtils.getClassLoader(jarPath, parent);
-                loader = classLoader;
-            } else {
-                // for test
-                loader = ClassLoader.getSystemClassLoader();
+        className = fn.scalar_fn.symbol;
+        super.init(request, jarPath, funcRetType, parameterTypes);
+        Method prepareMethod = objCache.allMethods.get(UDF_PREPARE_FUNCTION_NAME);
+        if (prepareMethod != null) {
+            try {
+                prepareMethod.invoke(udf);
+            } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
+                throw new UdfRuntimeException("Unable to call UDF prepare function.", e);
             }
-            Class<?> c = Class.forName(className, true, loader);
-            methodAccess = MethodAccess.get(c);
-            Constructor<?> ctor = c.getConstructor();
-            udf = ctor.newInstance();
-            Method[] methods = c.getMethods();
-            for (Method m : methods) {
-                // By convention, the udf must contain the function "evaluate"
-                if (!m.getName().equals(UDF_FUNCTION_NAME)) {
-                    continue;
-                }
-                signatures.add(m.toGenericString());
-                argClass = m.getParameterTypes();
+        }
+    }
 
-                // Try to match the arguments
-                if (argClass.length != parameterTypes.length) {
-                    continue;
-                }
-                method = m;
-                evaluateIndex = methodAccess.getIndex(UDF_FUNCTION_NAME);
-                Pair<Boolean, JavaUdfDataType> returnType;
-                if (argClass.length == 0 && parameterTypes.length == 0) {
-                    // Special case where the UDF doesn't take any input args
-                    returnType = UdfUtils.setReturnType(funcRetType, m.getReturnType());
-                    if (!returnType.first) {
-                        continue;
-                    } else {
-                        retType = returnType.second;
-                    }
-                    argTypes = new JavaUdfDataType[0];
-                    LOG.debug("Loaded UDF '" + className + "' from " + jarPath);
-                    return;
-                }
+    @Override
+    protected void checkAndCacheUdfClass(UdfClassCache cache, Type funcRetType, Type... parameterTypes)
+            throws InternalException, UdfRuntimeException {
+        ArrayList<String> signatures = Lists.newArrayList();
+        Class<?> c = cache.udfClass;
+        Method[] methods = c.getMethods();
+        Method prepareMethod = findPrepareMethod(methods);
+        if (prepareMethod != null) {
+            cache.allMethods.put(UDF_PREPARE_FUNCTION_NAME, prepareMethod);
+        }
+        for (Method m : methods) {
+            // By convention, the udf must contain the function "evaluate"
+            if (!m.getName().equals(UDF_FUNCTION_NAME)) {
+                continue;
+            }
+            signatures.add(m.toGenericString());
+            cache.argClass = m.getParameterTypes();
+
+            // Try to match the arguments
+            if (cache.argClass.length != parameterTypes.length) {
+                continue;
+            }
+            cache.allMethods.put(UDF_FUNCTION_NAME, m);
+            cache.methodIndex = cache.methodAccess.getIndex(UDF_FUNCTION_NAME, cache.argClass);
+            Pair<Boolean, JavaUdfDataType> returnType;
+            cache.retClass = m.getReturnType();
+            if (cache.argClass.length == 0 && parameterTypes.length == 0) {
+                // Special case where the UDF doesn't take any input args
                 returnType = UdfUtils.setReturnType(funcRetType, m.getReturnType());
                 if (!returnType.first) {
                     continue;
                 } else {
-                    retType = returnType.second;
+                    cache.retType = returnType.second;
                 }
-                Type keyType = retType.getKeyType();
-                Type valueType = retType.getValueType();
-                Pair<Boolean, JavaUdfDataType[]> inputType = UdfUtils.setArgTypes(parameterTypes, argClass, false);
-                if (!inputType.first) {
-                    continue;
-                } else {
-                    argTypes = inputType.second;
-                }
-                LOG.debug("Loaded UDF '" + className + "' from " + jarPath);
-                retType.setKeyType(keyType);
-                retType.setValueType(valueType);
+                cache.argTypes = new JavaUdfDataType[0];
                 return;
             }
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("Unable to find evaluate function with the correct signature: ")
-                    .append(className + ".evaluate(")
-                    .append(Joiner.on(", ").join(parameterTypes))
-                    .append(")\n")
-                    .append("UDF contains: \n    ")
-                    .append(Joiner.on("\n    ").join(signatures));
-            throw new UdfRuntimeException(sb.toString());
-        } catch (MalformedURLException e) {
-            throw new UdfRuntimeException("Unable to load jar.", e);
-        } catch (SecurityException e) {
-            throw new UdfRuntimeException("Unable to load function.", e);
-        } catch (ClassNotFoundException e) {
-            throw new UdfRuntimeException("Unable to find class.", e);
-        } catch (NoSuchMethodException e) {
-            throw new UdfRuntimeException(
-                    "Unable to find constructor with no arguments.", e);
-        } catch (IllegalArgumentException e) {
-            throw new UdfRuntimeException(
-                    "Unable to call UDF constructor with no arguments.", e);
-        } catch (Exception e) {
-            throw new UdfRuntimeException("Unable to call create UDF instance.", e);
+            returnType = UdfUtils.setReturnType(funcRetType, m.getReturnType());
+            if (!returnType.first) {
+                continue;
+            } else {
+                cache.retType = returnType.second;
+            }
+            Pair<Boolean, JavaUdfDataType[]> inputType = UdfUtils.setArgTypes(parameterTypes, cache.argClass, false);
+            if (!inputType.first) {
+                continue;
+            } else {
+                cache.argTypes = inputType.second;
+            }
+            return;
         }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Unable to find evaluate function with the correct signature: ")
+                .append(className)
+                .append(".evaluate(")
+                .append(Joiner.on(", ").join(parameterTypes))
+                .append(")\n")
+                .append("UDF contains: \n    ")
+                .append(Joiner.on("\n    ").join(signatures));
+        throw new UdfRuntimeException(sb.toString());
     }
-
 }
+
+

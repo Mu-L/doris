@@ -25,17 +25,19 @@ import org.apache.doris.thrift.TBrokerOperationStatusCode;
 import com.google.common.base.Strings;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.log4j.Logger;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -50,6 +52,7 @@ import java.nio.channels.FileLock;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivilegedExceptionAction;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -66,6 +69,7 @@ public class FileSystemManager {
             .getLogger(FileSystemManager.class.getName());
     // supported scheme
     private static final String HDFS_SCHEME = "hdfs";
+    private static final String VIEWFS_SCHEME = "viewfs";
     private static final String S3A_SCHEME = "s3a";
     private static final String KS3_SCHEME = "ks3";
     private static final String CHDFS_SCHEME = "ofs";
@@ -148,6 +152,7 @@ public class FileSystemManager {
     private static final String FS_BOS_SECRET_KEY = "fs.bos.secret.access.key";
     private static final String FS_BOS_ENDPOINT = "fs.bos.endpoint";
     private static final String FS_BOS_IMPL = "fs.bos.impl";
+    private static final String FS_BOS_IMPL_DISABLE_CACHE = "fs.bos.impl.disable.cache";
     private static final String FS_BOS_MULTIPART_UPLOADS_BLOCK_SIZE = "fs.bos.multipart.uploads.block.size";
 
     // arguments for afs
@@ -155,11 +160,10 @@ public class FileSystemManager {
     private static final String HADOOP_JOB_UGI = "hadoop.job.ugi";
     private static final String FS_DEFAULT_NAME = "fs.default.name";
     private static final String FS_AFS_IMPL = "fs.afs.impl";
+    private static final String FS_AFS_IMPL_DISABLE_CACHE = "fs.afs.impl.disable.cache";
     private static final String DFS_AGENT_PORT = "dfs.agent.port";
     private static final String DFS_CLIENT_AUTH_METHOD = "dfs.client.auth.method";
     private static final String DFS_RPC_TIMEOUT = "dfs.rpc.timeout";
-
-    private ScheduledExecutorService handleManagementPool = Executors.newScheduledThreadPool(2);
 
     private int readBufferSize = 128 << 10; // 128k
     private int writeBufferSize = 128 << 10; // 128k
@@ -169,7 +173,7 @@ public class FileSystemManager {
 
     public FileSystemManager() {
         cachedFileSystem = new ConcurrentHashMap<>();
-        clientContextManager = new ClientContextManager(handleManagementPool);
+        clientContextManager = new ClientContextManager();
         readBufferSize = BrokerConfig.hdfs_read_buffer_size_kb << 10;
         writeBufferSize = BrokerConfig.hdfs_write_buffer_size_kb << 10;
     }
@@ -210,7 +214,7 @@ public class FileSystemManager {
                 "invalid path. scheme is null");
         }
         BrokerFileSystem brokerFileSystem = null;
-        if (scheme.equals(HDFS_SCHEME)) {
+        if (scheme.equals(HDFS_SCHEME) || scheme.equals(VIEWFS_SCHEME)) {
             brokerFileSystem = getDistributedFileSystem(path, properties);
         } else if (scheme.equals(S3A_SCHEME)) {
             brokerFileSystem = getS3AFileSystem(path, properties);
@@ -232,6 +236,8 @@ public class FileSystemManager {
             brokerFileSystem = getGooseFSFileSystem(path, properties);
         } else if (scheme.equals(GCS_SCHEME)) {
             brokerFileSystem = getGCSFileSystem(path, properties);
+        } else if (scheme.equals(AFS_SCHEME)) {
+            brokerFileSystem = getAfsFileSystem(path, properties);
         } else {
             throw new BrokerException(TBrokerOperationStatusCode.INVALID_INPUT_FILE_PATH,
                 "invalid path. scheme is not supported");
@@ -337,20 +343,20 @@ public class FileSystemManager {
                         String keytab_content = properties.get(KERBEROS_KEYTAB_CONTENT);
                         byte[] base64decodedBytes = Base64.getDecoder().decode(keytab_content);
                         long currentTime = System.currentTimeMillis();
-                        Random random = new Random(currentTime);
+                        Random random = new SecureRandom();
                         int randNumber = random.nextInt(10000);
                         // different kerberos account has different file
                         tmpFilePath ="/tmp/." +
                                 principal.replace('/', '_') +
-                                "_" + Long.toString(currentTime) +
-                                "_" + Integer.toString(randNumber) +
+                                "_" + currentTime +
+                                "_" + randNumber +
                                 "_" + Thread.currentThread().getId();
                         logger.info("create kerberos tmp file" + tmpFilePath);
-                        FileOutputStream fileOutputStream = new FileOutputStream(tmpFilePath);
-                        FileLock lock = fileOutputStream.getChannel().lock();
-                        fileOutputStream.write(base64decodedBytes);
-                        lock.release();
-                        fileOutputStream.close();
+                        try (FileOutputStream fileOutputStream = new FileOutputStream(tmpFilePath)) {
+                            FileLock lock = fileOutputStream.getChannel().lock();
+                            fileOutputStream.write(base64decodedBytes);
+                            lock.release();
+                        }
                         keytab = tmpFilePath;
                     } else {
                         throw  new BrokerException(TBrokerOperationStatusCode.INVALID_ARGUMENT,
@@ -727,12 +733,12 @@ public class FileSystemManager {
                         String keytabContent = properties.get(KERBEROS_KEYTAB_CONTENT);
                         byte[] base64decodedBytes = Base64.getDecoder().decode(keytabContent);
                         long currentTime = System.currentTimeMillis();
-                        Random random = new Random(currentTime);
+                        Random random = new SecureRandom();
                         int randNumber = random.nextInt(10000);
-                        tmpFilePath = "/tmp/." + Long.toString(currentTime) + "_" + Integer.toString(randNumber);
-                        FileOutputStream fileOutputStream = new FileOutputStream(tmpFilePath);
-                        fileOutputStream.write(base64decodedBytes);
-                        fileOutputStream.close();
+                        tmpFilePath = "/tmp/." + currentTime + "_" + randNumber;
+                        try (FileOutputStream fileOutputStream = new FileOutputStream(tmpFilePath)) {
+                            fileOutputStream.write(base64decodedBytes);
+                        }
                         keytab = tmpFilePath;
                     } else {
                         throw  new BrokerException(TBrokerOperationStatusCode.INVALID_ARGUMENT,
@@ -843,6 +849,7 @@ public class FileSystemManager {
                 conf.set(FS_BOS_SECRET_KEY, secretKey);
                 conf.set(FS_BOS_ENDPOINT, endpoint);
                 conf.set(FS_BOS_IMPL, "org.apache.hadoop.fs.bos.BaiduBosFileSystem");
+                conf.set(FS_BOS_IMPL_DISABLE_CACHE, "true");
                 conf.set(FS_BOS_MULTIPART_UPLOADS_BLOCK_SIZE, multiPartUploadBlockSize);
                 FileSystem bosFileSystem = FileSystem.get(pathUri.getUri(), conf);
                 fileSystem.setFileSystem(bosFileSystem);
@@ -945,12 +952,12 @@ public class FileSystemManager {
                         String keytabContent = properties.get(KERBEROS_KEYTAB_CONTENT);
                         byte[] base64decodedBytes = Base64.getDecoder().decode(keytabContent);
                         long currentTime = System.currentTimeMillis();
-                        Random random = new Random(currentTime);
+                        Random random = new SecureRandom();
                         int randNumber = random.nextInt(10000);
-                        tmpFilePath = "/tmp/." + Long.toString(currentTime) + "_" + Integer.toString(randNumber);
-                        FileOutputStream fileOutputStream = new FileOutputStream(tmpFilePath);
-                        fileOutputStream.write(base64decodedBytes);
-                        fileOutputStream.close();
+                        tmpFilePath = "/tmp/." + currentTime + "_" + randNumber;
+                        try (FileOutputStream fileOutputStream = new FileOutputStream(tmpFilePath)) {
+                            fileOutputStream.write(base64decodedBytes);
+                        }
                         keytab = tmpFilePath;
                     } else {
                         throw new BrokerException(TBrokerOperationStatusCode.INVALID_ARGUMENT,
@@ -1006,7 +1013,8 @@ public class FileSystemManager {
                 conf.set(HADOOP_JOB_UGI, afsUgi);
                 conf.set(HADOOP_JOB_GROUP_NAME, group);
                 conf.set(FS_DEFAULT_NAME, host);
-                conf.set(FS_AFS_IMPL, "org.apache.hadoop.fs.DFileSystem");
+                conf.set(FS_AFS_IMPL, properties.getOrDefault(FS_AFS_IMPL, "org.apache.hadoop.fs.LiteFileSystem"));
+                conf.set(FS_AFS_IMPL_DISABLE_CACHE, "true");
                 conf.set(DFS_CLIENT_AUTH_METHOD, properties.getOrDefault(DFS_CLIENT_AUTH_METHOD, "3"));
                 conf.set(DFS_AGENT_PORT, properties.getOrDefault(DFS_AGENT_PORT, "20001"));
                 conf.set(DFS_RPC_TIMEOUT, properties.getOrDefault(DFS_RPC_TIMEOUT, "300000"));
@@ -1058,6 +1066,49 @@ public class FileSystemManager {
         } finally {
             brokerFileSystem.getLock().unlock();
         }
+    }
+
+    public List<TBrokerFileStatus> listLocatedFiles(String path, boolean onlyFiles,
+                                                    boolean recursive, Map<String, String> properties) {
+        List<TBrokerFileStatus> resultFileStatus = null;
+        BrokerFileSystem fileSystem = getFileSystem(path, properties);
+        Path locatedPath = new Path(path);
+        try {
+            FileSystem innerFileSystem = fileSystem.getDFSFileSystem();
+            RemoteIterator<LocatedFileStatus> locatedFiles = onlyFiles ? innerFileSystem.listFiles(locatedPath, recursive)
+                : innerFileSystem.listLocatedStatus(locatedPath);
+            return getFileLocations(locatedFiles);
+        } catch (FileNotFoundException e) {
+            logger.info("file not found: " + e.getMessage());
+            throw new BrokerException(TBrokerOperationStatusCode.FILE_NOT_FOUND,
+                e, "file not found");
+        } catch (Exception e) {
+            logger.error("errors while get file status ", e);
+            fileSystem.closeFileSystem();
+            throw new BrokerException(TBrokerOperationStatusCode.TARGET_STORAGE_SERVICE_ERROR,
+                e, "unknown error when listLocatedFiles");
+        }
+    }
+
+    private List<TBrokerFileStatus> getFileLocations(RemoteIterator<LocatedFileStatus> locatedFiles) throws IOException {
+        List<TBrokerFileStatus> locations = new ArrayList<>();
+        while (locatedFiles.hasNext()) {
+            LocatedFileStatus fileStatus = locatedFiles.next();
+            TBrokerFileStatus brokerFileStatus = new TBrokerFileStatus();
+            brokerFileStatus.setPath(fileStatus.getPath().toString());
+            brokerFileStatus.setIsDir(fileStatus.isDirectory());
+            if (fileStatus.isDirectory()) {
+                brokerFileStatus.setIsSplitable(false);
+                brokerFileStatus.setSize(-1);
+            } else {
+                brokerFileStatus.setSize(fileStatus.getLen());
+                brokerFileStatus.setIsSplitable(true);
+            }
+            brokerFileStatus.setModificationTime(fileStatus.getModificationTime());
+            brokerFileStatus.setBlockSize(fileStatus.getBlockSize());
+            locations.add(brokerFileStatus);
+        }
+        return locations;
     }
 
     public List<TBrokerFileStatus> listPath(String path, boolean fileNameOnly, Map<String, String> properties) {
@@ -1211,8 +1262,14 @@ public class FileSystemManager {
                 try {
                     int readLength = fsDataInputStream.read(buf, hasRead, bufSize);
                     if (readLength < 0) {
-                        throw new BrokerException(TBrokerOperationStatusCode.END_OF_FILE,
-                                "end of file reached");
+                        // If no data is read, just return EOF
+                        // Otherwise, return the read data.
+                        // Because the "length" may be longer than the rest length of the file.
+                        if (hasRead == 0) {
+                            throw new BrokerException(TBrokerOperationStatusCode.END_OF_FILE,
+                                    "end of file reached");
+                        }
+                        break;
                     }
                     if (logger.isDebugEnabled()) {
                         logger.debug("read buffer from input stream, buffer size:" + buf.length + ", read length:"
@@ -1226,8 +1283,7 @@ public class FileSystemManager {
                 }
             }
             if (hasRead != length) {
-                throw new BrokerException(TBrokerOperationStatusCode.TARGET_STORAGE_SERVICE_ERROR,
-                        String.format("errors while read data from stream: hasRead(%d) != length(%d)", hasRead, length));
+                logger.debug("broker pread return diff length. read bytes: " + hasRead + ", request bytes: " + length);
             }
             return ByteBuffer.wrap(buf, 0, hasRead);
         }
@@ -1276,13 +1332,7 @@ public class FileSystemManager {
         FSDataOutputStream fsDataOutputStream = clientContextManager.getFsDataOutputStream(fd);
         synchronized (fsDataOutputStream) {
             long currentStreamOffset;
-            try {
-                currentStreamOffset = fsDataOutputStream.getPos();
-            } catch (IOException e) {
-                logger.error("errors while get file pos from output stream", e);
-                throw new BrokerException(TBrokerOperationStatusCode.TARGET_STORAGE_SERVICE_ERROR,
-                        "errors while get file pos from output stream");
-            }
+            currentStreamOffset = fsDataOutputStream.getPos();
             if (currentStreamOffset != offset) {
                 // it's ok, it means that last pwrite succeed finally
                 if (currentStreamOffset == offset + data.length) {

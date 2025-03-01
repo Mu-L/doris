@@ -46,22 +46,22 @@ class Block;
 
 class VMysqlTableWriter final : public AsyncResultWriter {
 public:
-    VMysqlTableWriter(const TDataSink& t_sink, const VExprContextSPtrs& output_exprs);
+    VMysqlTableWriter(const TDataSink& t_sink, const VExprContextSPtrs& output_exprs,
+                      std::shared_ptr<pipeline::Dependency> dep,
+                      std::shared_ptr<pipeline::Dependency> fin_dep);
 
     // connect to mysql server
     Status open(RuntimeState* state, RuntimeProfile* profile) override;
 
-    Status append_block(vectorized::Block& block) override;
+    Status write(RuntimeState* state, vectorized::Block& block) override;
 
-    Status finish_trans() { return Status::OK(); }
-
-    Status close() override;
+    Status close(Status) override;
 
 private:
-    Status insert_row(vectorized::Block& block, size_t row);
+    Status _insert_row(vectorized::Block& block, size_t row);
     MysqlConnInfo _conn_info;
     fmt::memory_buffer _insert_stmt_buffer;
-    MYSQL* _mysql_conn;
+    MYSQL* _mysql_conn = nullptr;
 };
 } // namespace vectorized
 } // namespace doris

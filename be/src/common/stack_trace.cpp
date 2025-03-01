@@ -38,7 +38,7 @@
 #include "vec/common/demangle.h"
 #include "vec/common/hex.h"
 
-#if USE_UNWIND
+#if USE_UNWIND && defined(__x86_64__)
 #include <libunwind.h>
 #else
 #include <execinfo.h>
@@ -49,14 +49,14 @@ namespace {
 /// But we use atomic just in case, so it is possible to be modified at runtime.
 std::atomic<bool> show_addresses = true;
 
-#if defined(__ELF__) && !defined(__FreeBSD__)
-void writePointerHex(const void* ptr, std::stringstream& buf) {
-    buf.write("0x", 2);
-    char hex_str[2 * sizeof(ptr)];
-    doris::vectorized::write_hex_uint_lowercase(reinterpret_cast<uintptr_t>(ptr), hex_str);
-    buf.write(hex_str, 2 * sizeof(ptr));
-}
-#endif
+// #if defined(__ELF__) && !defined(__FreeBSD__)
+// void writePointerHex(const void* ptr, std::stringstream& buf) {
+//     buf.write("0x", 2);
+//     char hex_str[2 * sizeof(ptr)];
+//     doris::vectorized::write_hex_uint_lowercase(reinterpret_cast<uintptr_t>(ptr), hex_str);
+//     buf.write(hex_str, 2 * sizeof(ptr));
+// }
+// #endif
 
 bool shouldShowAddress(const void* addr) {
     /// If the address is less than 4096, most likely it is a nullptr dereference with offset,
@@ -380,20 +380,15 @@ static void toStringEveryLineImpl([[maybe_unused]] const std::string dwarf_locat
                 reinterpret_cast<const void*>(uintptr_t(virtual_addr) - virtual_offset);
 
         std::stringstream out;
-        out << "\t" << i << ". ";
+        out << "\t" << i << "# ";
         if (i < 10) { // for alignment
             out << " ";
         }
 
-        if (shouldShowAddress(physical_addr)) {
-            out << "@ ";
-            writePointerHex(physical_addr, out);
-        }
-
         if (const auto* const symbol = symbol_index.findSymbol(virtual_addr)) {
-            out << "  " << collapseNames(demangle(symbol->name));
+            out << collapseNames(demangle(symbol->name));
         } else {
-            out << " ?";
+            out << "?";
         }
 
         if (std::error_code ec; object && std::filesystem::exists(object->name, ec) && !ec) {
@@ -403,11 +398,17 @@ static void toStringEveryLineImpl([[maybe_unused]] const std::string dwarf_locat
 
             if (dwarf_it->second.findAddress(uintptr_t(physical_addr), location, mode,
                                              inline_frames)) {
-                out << "  " << location.file.toString() << ":" << location.line;
+                out << " at " << location.file.toString() << ":" << location.line;
             }
         }
 
-        out << "  in " << (object ? object->name : "?");
+        // Do not display the stack address and file name, it is not important.
+        // if (shouldShowAddress(physical_addr)) {
+        //     out << " @ ";
+        //     writePointerHex(physical_addr, out);
+        // }
+
+        // out << "  in " << (object ? object->name : "?");
 
         callback(out.str());
 
@@ -438,7 +439,8 @@ static StackTraceCache& cacheInstance() {
 
 static std::mutex stacktrace_cache_mutex;
 
-std::string toStringCached(const StackTrace::FramePointers& pointers, size_t offset, size_t size) {
+std::string toStringCached(const StackTrace::FramePointers& pointers, size_t offset, size_t size,
+                           const std::string& dwarf_location_info_mode) {
     /// Calculation of stack trace text is extremely slow.
     /// We use simple cache because otherwise the server could be overloaded by trash queries.
     /// Note that this cache can grow unconditionally, but practically it should be small.
@@ -451,27 +453,37 @@ std::string toStringCached(const StackTrace::FramePointers& pointers, size_t off
         return it->second;
     } else {
         std::stringstream out;
-        toStringEveryLineImpl(doris::config::dwarf_location_info_mode, key,
+        toStringEveryLineImpl(dwarf_location_info_mode, key,
                               [&](std::string_view str) { out << str << '\n'; });
 
         return cache.emplace(StackTraceTriple {pointers, offset, size}, out.str()).first->second;
     }
 }
 
-std::string StackTrace::toString() const {
-    // Delete the first three frame pointers, which are inside the stacktrace.
+std::string StackTrace::toString(int start_pointers_index,
+                                 const std::string& dwarf_location_info_mode) const {
+    // Default delete the first three frame pointers, which are inside the stack_trace.cpp.
+    start_pointers_index += 3;
     StackTrace::FramePointers frame_pointers_raw {};
-    std::copy(frame_pointers.begin() + 3, frame_pointers.end(), frame_pointers_raw.begin());
-    return toStringCached(frame_pointers_raw, offset, size - 3);
+    std::copy(frame_pointers.begin() + start_pointers_index, frame_pointers.end(),
+              frame_pointers_raw.begin());
+    return toStringCached(frame_pointers_raw, offset, size - start_pointers_index,
+                          dwarf_location_info_mode);
 }
 
-std::string StackTrace::toString(void** frame_pointers_raw, size_t offset, size_t size) {
+std::string StackTrace::toString(void** frame_pointers_raw, size_t offset, size_t size,
+                                 const std::string& dwarf_location_info_mode) {
     __msan_unpoison(frame_pointers_raw, size * sizeof(*frame_pointers_raw));
 
     StackTrace::FramePointers frame_pointers {};
     std::copy_n(frame_pointers_raw, size, frame_pointers.begin());
 
-    return toStringCached(frame_pointers, offset, size);
+    return toStringCached(frame_pointers, offset, size, dwarf_location_info_mode);
+}
+
+void StackTrace::createCache() {
+    std::lock_guard lock {stacktrace_cache_mutex};
+    cacheInstance();
 }
 
 void StackTrace::dropCache() {

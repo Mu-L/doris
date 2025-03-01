@@ -49,17 +49,13 @@ import javax.servlet.http.HttpServletResponse;
 public class MetaService extends RestBaseController {
     private static final Logger LOG = LogManager.getLogger(MetaService.class);
 
-    private static final int TIMEOUT_SECOND = 10;
-
     private static final String VERSION = "version";
     private static final String HOST = "host";
     private static final String PORT = "port";
 
     private File imageDir = MetaHelper.getMasterImageDir();
 
-    private boolean isFromValidFe(HttpServletRequest request) {
-        String clientHost = request.getHeader(Env.CLIENT_NODE_HOST_KEY);
-        String clientPortStr = request.getHeader(Env.CLIENT_NODE_PORT_KEY);
+    private boolean isFromValidFe(String clientHost, String clientPortStr) {
         Integer clientPort;
         try {
             clientPort = Integer.valueOf(clientPortStr);
@@ -76,11 +72,13 @@ public class MetaService extends RestBaseController {
         return true;
     }
 
-
     private void checkFromValidFe(HttpServletRequest request)
             throws InvalidClientException {
-        if (!isFromValidFe(request)) {
-            throw new InvalidClientException("invalid client host: " + request.getRemoteHost());
+        String clientHost = request.getHeader(Env.CLIENT_NODE_HOST_KEY);
+        String clientPort = request.getHeader(Env.CLIENT_NODE_PORT_KEY);
+        if (!isFromValidFe(clientHost, clientPort)) {
+            throw new InvalidClientException("invalid client host: " + clientHost + ":" + clientPort
+                + ", request from " + request.getRemoteHost());
         }
     }
 
@@ -162,7 +160,7 @@ public class MetaService extends RestBaseController {
         String filename = Storage.IMAGE + "." + versionStr;
         File dir = new File(Env.getCurrentEnv().getImageDir());
         try {
-            MetaHelper.getRemoteFile(url, TIMEOUT_SECOND * 1000, MetaHelper.getFile(filename, dir));
+            MetaHelper.getRemoteFile(url, Config.sync_image_timeout_second * 1000, MetaHelper.getFile(filename, dir));
             MetaHelper.complete(filename, dir);
         } catch (FileNotFoundException e) {
             return ResponseEntityBuilder.notFound("file not found.");

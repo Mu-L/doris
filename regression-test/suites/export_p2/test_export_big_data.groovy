@@ -22,6 +22,11 @@ import java.nio.file.Files
 import java.nio.file.Paths
 
 suite("test_export_big_data", "p2") {
+    // open nereids
+    sql """ set enable_nereids_planner=true """
+    sql """ set enable_fallback_to_original_planner=false """
+
+
     // check whether the FE config 'enable_outfile_to_local' is true
     StringBuilder strBuilder = new StringBuilder()
     strBuilder.append("curl --location-trusted -u " + context.config.jdbcUser + ":" + context.config.jdbcPassword)
@@ -100,6 +105,7 @@ suite("test_export_big_data", "p2") {
             "uri" = "https://${bucket}.${s3_endpoint}/regression/export_p2/export_orc/test_export_big_data_dataset.orc",
             "s3.access_key"= "${ak}",
             "s3.secret_key" = "${sk}",
+            "provider" = "${getS3Provider()}",
             "format" = "orc");
         """
 

@@ -19,6 +19,7 @@ package org.apache.doris.common.proc;
 
 import org.apache.doris.catalog.Env;
 import org.apache.doris.common.Config;
+import org.apache.doris.common.Pair;
 import org.apache.doris.common.io.DiskUtils;
 import org.apache.doris.common.util.TimeUtils;
 import org.apache.doris.qe.ConnectContext;
@@ -46,14 +47,14 @@ public class FrontendsProcNode implements ProcNodeInterface {
 
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
             .add("Name").add("Host").add("EditLogPort").add("HttpPort").add("QueryPort").add("RpcPort")
-            .add("Role").add("IsMaster").add("ClusterId").add("Join").add("Alive")
+            .add("ArrowFlightSqlPort").add("Role").add("IsMaster").add("ClusterId").add("Join").add("Alive")
             .add("ReplayedJournalId").add("LastStartTime").add("LastHeartbeat")
             .add("IsHelper").add("ErrMsg").add("Version")
             .add("CurrentConnected")
             .build();
 
     public static final ImmutableList<String> DISK_TITLE_NAMES = new ImmutableList.Builder<String>()
-            .add("Name").add("Host").add("EditLogPort").add("DirType").add("Dir").add("Filesystem")
+            .add("Name").add("Host").add("DirType").add("Dir").add("Filesystem")
             .add("Capacity").add("Used").add("Available").add("UseRate").add("MountOn")
             .build();
 
@@ -82,9 +83,26 @@ public class FrontendsProcNode implements ProcNodeInterface {
     public static void getFrontendsInfo(Env env, String detailType, List<List<String>> infos) {
         if (detailType == null) {
             getFrontendsInfo(env, infos);
-        } else if (detailType.equals("disks")) {
+        } else if (detailType.equalsIgnoreCase("disks")) {
             getFrontendsDiskInfo(env, infos);
         }
+    }
+
+    public static List<Pair<String, Integer>> getFrontendWithRpcPort(Env env, boolean includeSelf) {
+        List<Pair<String, Integer>> allFe = new ArrayList<>();
+        List<Frontend> frontends = env.getFrontends(null);
+
+        String selfNode = Env.getCurrentEnv().getSelfNode().getHost();
+        if (ConnectContext.get() != null && !Strings.isNullOrEmpty(ConnectContext.get().getCurrentConnectedFEIp())) {
+            selfNode = ConnectContext.get().getCurrentConnectedFEIp();
+        }
+
+        String finalSelfNode = selfNode;
+        frontends.stream()
+            .filter(fe -> (!fe.getHost().equals(finalSelfNode) || includeSelf))
+            .map(fe -> Pair.of(fe.getHost(), fe.getRpcPort()))
+                .forEach(allFe::add);
+        return allFe;
     }
 
     public static void getFrontendsInfo(Env env, List<List<String>> infos) {
@@ -108,8 +126,9 @@ public class FrontendsProcNode implements ProcNodeInterface {
             selfNode = ConnectContext.get().getCurrentConnectedFEIp();
         }
 
-        for (Frontend fe : env.getFrontends(null /* all */)) {
-
+        List<Frontend> envFes = env.getFrontends(null /* all */);
+        LOG.info("bdbje fes {}, env fes {}", allFe, envFes);
+        for (Frontend fe : envFes) {
             List<String> info = new ArrayList<String>();
             info.add(fe.getNodeName());
             info.add(fe.getHost());
@@ -119,9 +138,11 @@ public class FrontendsProcNode implements ProcNodeInterface {
             if (fe.getHost().equals(env.getSelfNode().getHost())) {
                 info.add(Integer.toString(Config.query_port));
                 info.add(Integer.toString(Config.rpc_port));
+                info.add(Integer.toString(Config.arrow_flight_sql_port));
             } else {
                 info.add(Integer.toString(fe.getQueryPort()));
                 info.add(Integer.toString(fe.getRpcPort()));
+                info.add(Integer.toString(fe.getArrowFlightSqlPort()));
             }
 
             info.add(fe.getRole().name());
@@ -152,6 +173,15 @@ public class FrontendsProcNode implements ProcNodeInterface {
         }
     }
 
+    public static Frontend getCurrentFrontendVersion(Env env) {
+        for (Frontend fe : env.getFrontends(null /* all */)) {
+            if (fe.getHost().equals(env.getSelfNode().getHost())) {
+                return fe;
+            }
+        }
+        return null;
+    }
+
     public static void getFrontendsDiskInfo(Env env, List<List<String>> infos) {
         for (Frontend fe : env.getFrontends(null /* all */)) {
             if (fe.getDiskInfos() != null) {
@@ -159,7 +189,6 @@ public class FrontendsProcNode implements ProcNodeInterface {
                     List<String> info = new ArrayList<String>();
                     info.add(fe.getNodeName());
                     info.add(fe.getHost());
-                    info.add(Integer.toString(fe.getEditLogPort()));
                     info.add(disk.getDirType());
                     info.add(disk.getDir());
                     info.add(disk.getSpaceInfo().fileSystem);
@@ -184,11 +213,6 @@ public class FrontendsProcNode implements ProcNodeInterface {
             if (fe.getEditLogPort() != addr.getPort()) {
                 continue;
             }
-            if (!Strings.isNullOrEmpty(addr.getHostName())) {
-                if (addr.getHostName().equals(fe.getHost())) {
-                    return true;
-                }
-            }
             // if hostname of InetSocketAddress is ip, addr.getHostName() may be not equal to fe.getIp()
             // so we need to compare fe.getIp() with address.getHostAddress()
             InetAddress address = addr.getAddress();
@@ -198,6 +222,22 @@ public class FrontendsProcNode implements ProcNodeInterface {
             }
             if (fe.getHost().equals(address.getHostAddress())) {
                 return true;
+            }
+        }
+
+        // Avoid calling getHostName multiple times, don't remove it
+        for (InetSocketAddress addr : allFeHosts) {
+            // Avoid calling getHostName multiple times, don't remove it
+            if (fe.getEditLogPort() != addr.getPort()) {
+                continue;
+            }
+            // https://bugs.openjdk.org/browse/JDK-8143378#:~:text=getHostName()%3B%20takes%20about%205,millisecond%20on%20JDK%20update%2051
+            // getHostName sometime has bug, take 5s
+            String host = addr.getHostName();
+            if (!Strings.isNullOrEmpty(host)) {
+                if (host.equals(fe.getHost())) {
+                    return true;
+                }
             }
         }
         return false;

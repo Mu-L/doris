@@ -45,7 +45,9 @@ public class ColumnType {
         LARGEINT(16),
         FLOAT(4),
         DOUBLE(8),
+        DATE(8),
         DATEV2(4),
+        DATETIME(8),
         DATETIMEV2(8),
         CHAR(-1),
         VARCHAR(-1),
@@ -54,6 +56,8 @@ public class ColumnType {
         DECIMAL32(4),
         DECIMAL64(8),
         DECIMAL128(16),
+        IPV4(4),
+        IPV6(16),
         STRING(-1),
         ARRAY(-1),
         MAP(-1),
@@ -74,8 +78,8 @@ public class ColumnType {
     // only used in char & varchar
     private final int length;
     // only used in decimal
-    private final int precision;
-    private final int scale;
+    private int precision;
+    private int scale;
 
     public ColumnType(String name, Type type) {
         this.name = name;
@@ -153,12 +157,37 @@ public class ColumnType {
         return type == Type.ARRAY;
     }
 
+    public boolean isIpv4() {
+        return type == Type.IPV4;
+    }
+
+    public boolean isIpv6() {
+        return type == Type.IPV6;
+    }
+
+    public boolean isIp() {
+        return isIpv4() || isIpv6();
+    }
+
     public boolean isMap() {
         return type == Type.MAP;
     }
 
     public boolean isStruct() {
         return type == Type.STRUCT;
+    }
+
+    public boolean isDateV2() {
+        return type == Type.DATEV2;
+    }
+
+    public boolean isDateTimeV2() {
+        return type == Type.DATETIMEV2;
+    }
+
+    public boolean isPrimitive() {
+        return type == Type.BOOLEAN || type == Type.BYTE || type == Type.TINYINT || type == Type.SMALLINT
+                || type == Type.INT || type == Type.BIGINT || type == Type.FLOAT || type == Type.DOUBLE;
     }
 
     public Type getType() {
@@ -173,8 +202,16 @@ public class ColumnType {
         return length;
     }
 
+    public void setPrecision(int precision) {
+        this.precision = precision;
+    }
+
     public int getPrecision() {
         return precision;
+    }
+
+    public void setScale(int scale) {
+        this.scale = scale;
     }
 
     public int getScale() {
@@ -184,16 +221,16 @@ public class ColumnType {
     public int metaSize() {
         switch (type) {
             case UNSUPPORTED:
-                // set nullMap address as 0.
-                return 1;
+                // const flag / set nullMap address as 0.
+                return 2;
             case ARRAY:
             case MAP:
             case STRUCT:
-                // array & map : [nullMap | offsets | ... ]
-                // struct : [nullMap | ... ]
-                int size = 2;
+                // array & map : [const | nullMap | offsets | ... ]
+                // struct : [const | nullMap | ... ]
+                int size = 3;
                 if (type == Type.STRUCT) {
-                    size = 1;
+                    size = 2;
                 }
                 for (ColumnType c : childTypes) {
                     size += c.metaSize();
@@ -203,15 +240,15 @@ public class ColumnType {
             case BINARY:
             case CHAR:
             case VARCHAR:
-                // [nullMap | offsets | data ]
-                return 3;
+                // [const | nullMap | offsets | data ]
+                return 4;
             default:
-                // [nullMap | data]
-                return 2;
+                // [const | nullMap | data]
+                return 3;
         }
     }
 
-    private static final Pattern digitPattern = Pattern.compile("(\\d+)");
+    private static final Pattern digitPattern = Pattern.compile("\\((\\d+)\\)");
 
     private static int findNextNestedField(String commaSplitFields) {
         int numLess = 0;
@@ -264,8 +301,21 @@ public class ColumnType {
             case "double":
                 type = Type.DOUBLE;
                 break;
+            case "ipv4":
+                type = Type.IPV4;
+                break;
+            case "ipv6":
+                type = Type.IPV6;
+                break;
+            case "datev1":
+                type = Type.DATE;
+                break;
             case "date":
+            case "datev2":
                 type = Type.DATEV2;
+                break;
+            case "datetimev1":
+                type = Type.DATETIME;
                 break;
             case "binary":
             case "bytes":
@@ -275,7 +325,9 @@ public class ColumnType {
                 type = Type.STRING;
                 break;
             default:
-                if (lowerCaseType.startsWith("timestamp")) {
+                if (lowerCaseType.startsWith("timestamp")
+                        || lowerCaseType.startsWith("datetime")
+                        || lowerCaseType.startsWith("datetimev2")) {
                     type = Type.DATETIMEV2;
                     precision = 6; // default
                     Matcher match = digitPattern.matcher(lowerCaseType);
@@ -334,8 +386,9 @@ public class ColumnType {
                         String keyValue = lowerCaseType.substring(4, lowerCaseType.length() - 1);
                         int index = findNextNestedField(keyValue);
                         if (index != keyValue.length() && index != 0) {
-                            ColumnType keyType = parseType("key", keyValue.substring(0, index));
-                            ColumnType valueType = parseType("value", keyValue.substring(index + 1));
+                            ColumnType keyType = parseType("key", keyValue.substring(0, index).trim());
+                            ColumnType valueType =
+                                    parseType("value", keyValue.substring(index + 1).trim());
                             ColumnType mapType = new ColumnType(columnName, Type.MAP);
                             mapType.setChildTypes(Arrays.asList(keyType, valueType));
                             return mapType;

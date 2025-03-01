@@ -25,7 +25,6 @@ import org.apache.doris.catalog.Table;
 import org.apache.doris.catalog.TableIf;
 import org.apache.doris.catalog.TableIf.TableType;
 import org.apache.doris.catalog.Type;
-import org.apache.doris.catalog.external.HMSExternalTable;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.ErrorCode;
 import org.apache.doris.common.ErrorReport;
@@ -36,7 +35,12 @@ import org.apache.doris.common.proc.ProcResult;
 import org.apache.doris.common.proc.ProcService;
 import org.apache.doris.common.util.OrderByPair;
 import org.apache.doris.datasource.CatalogIf;
-import org.apache.doris.datasource.HMSExternalCatalog;
+import org.apache.doris.datasource.hive.HMSExternalCatalog;
+import org.apache.doris.datasource.hive.HMSExternalTable;
+import org.apache.doris.datasource.iceberg.IcebergExternalCatalog;
+import org.apache.doris.datasource.iceberg.IcebergExternalTable;
+import org.apache.doris.datasource.maxcompute.MaxComputeExternalCatalog;
+import org.apache.doris.datasource.maxcompute.MaxComputeExternalTable;
 import org.apache.doris.mysql.privilege.PrivPredicate;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.ShowResultSetMetaData;
@@ -52,11 +56,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-public class ShowPartitionsStmt extends ShowStmt {
+public class ShowPartitionsStmt extends ShowStmt implements NotFallbackInParser {
     private static final Logger LOG = LogManager.getLogger(ShowPartitionsStmt.class);
 
     private static final String FILTER_PARTITION_ID = "PartitionId";
-    private static final String FILTER_PARTITION_NAME = "PartitionName";
+    public static final String FILTER_PARTITION_NAME = "PartitionName";
     private static final String FILTER_STATE = "State";
     private static final String FILTER_BUCKETS = "Buckets";
     private static final String FILTER_REPLICATION_NUM = "ReplicationNum";
@@ -125,8 +129,9 @@ public class ShowPartitionsStmt extends ShowStmt {
         }
 
         DatabaseIf db = catalog.getDbOrAnalysisException(dbName);
-        TableIf table = db.getTableOrMetaException(tblName, Table.TableType.OLAP, TableType.MATERIALIZED_VIEW,
-                    TableType.HMS_EXTERNAL_TABLE);
+        TableIf table = db.getTableOrMetaException(tblName, Table.TableType.OLAP,
+                    TableType.HMS_EXTERNAL_TABLE, TableType.MAX_COMPUTE_EXTERNAL_TABLE,
+                    TableType.ICEBERG_EXTERNAL_TABLE);
 
         if (table instanceof HMSExternalTable) {
             if (((HMSExternalTable) table).isView()) {
@@ -134,6 +139,20 @@ public class ShowPartitionsStmt extends ShowStmt {
             }
             if (CollectionUtils.isEmpty(((HMSExternalTable) table).getPartitionColumns())) {
                 throw new AnalysisException("Table " + tblName + " is not a partitioned table");
+            }
+            return;
+        }
+
+        if (table instanceof MaxComputeExternalTable) {
+            if (((MaxComputeExternalTable) table).getOdpsTable().getPartitions().isEmpty()) {
+                throw new AnalysisException("Table " + tblName + " is not a partitioned table");
+            }
+            return;
+        }
+
+        if (table instanceof IcebergExternalTable) {
+            if (!((IcebergExternalTable) table).isValidRelatedTable()) {
+                throw new AnalysisException("Table " + tblName + " is not a supported partition table");
             }
             return;
         }
@@ -170,7 +189,8 @@ public class ShowPartitionsStmt extends ShowStmt {
         }
 
         // disallow unsupported catalog
-        if (!(catalog.isInternalCatalog() || catalog instanceof HMSExternalCatalog)) {
+        if (!(catalog.isInternalCatalog() || catalog instanceof HMSExternalCatalog
+                || catalog instanceof MaxComputeExternalCatalog || catalog instanceof IcebergExternalCatalog)) {
             throw new AnalysisException(String.format("Catalog of type '%s' is not allowed in ShowPartitionsStmt",
                 catalog.getType()));
         }
@@ -188,6 +208,11 @@ public class ShowPartitionsStmt extends ShowStmt {
                     throw new AnalysisException("Should order by column");
                 }
                 SlotRef slotRef = (SlotRef) orderByElement.getExpr();
+                if (catalog instanceof HMSExternalCatalog
+                        && !slotRef.getColumnName().equalsIgnoreCase(FILTER_PARTITION_NAME)) {
+                    throw new AnalysisException("External table only support Order By on PartitionName");
+                }
+
                 int index = PartitionsProcDir.analyzeColumn(slotRef.getColumnName());
                 OrderByPair orderByPair = new OrderByPair(index, !orderByElement.getIsAsc());
                 orderByPairs.add(orderByPair);
@@ -218,6 +243,10 @@ public class ShowPartitionsStmt extends ShowStmt {
         }
 
         String leftKey = ((SlotRef) subExpr.getChild(0)).getColumnName();
+        if (catalog instanceof HMSExternalCatalog && !leftKey.equalsIgnoreCase(FILTER_PARTITION_NAME)) {
+            throw new AnalysisException(String.format("Only %s column supported in where clause for this catalog",
+                FILTER_PARTITION_NAME));
+        }
         if (subExpr instanceof BinaryPredicate) {
             BinaryPredicate binaryPredicate = (BinaryPredicate) subExpr;
             if (leftKey.equalsIgnoreCase(FILTER_PARTITION_NAME) || leftKey.equalsIgnoreCase(FILTER_STATE)) {
@@ -268,6 +297,10 @@ public class ShowPartitionsStmt extends ShowStmt {
             for (String col : result.getColumnNames()) {
                 builder.addColumn(new Column(col, ScalarType.createVarchar(30)));
             }
+        } else if (catalog instanceof IcebergExternalCatalog) {
+            builder.addColumn(new Column("Partition", ScalarType.createVarchar(60)));
+            builder.addColumn(new Column("Lower Bound", ScalarType.createVarchar(100)));
+            builder.addColumn(new Column("Upper Bound", ScalarType.createVarchar(100)));
         } else {
             builder.addColumn(new Column("Partition", ScalarType.createVarchar(60)));
         }

@@ -60,26 +60,26 @@ Status SchemaMetadataNameIdsScanner::start(RuntimeState* state) {
     }
     SCOPED_TIMER(_get_db_timer);
     TGetDbsParams db_params;
-    if (nullptr != _param->db) {
-        db_params.__set_pattern(*(_param->db));
+    if (nullptr != _param->common_param->db) {
+        db_params.__set_pattern(*(_param->common_param->db));
     }
-    if (nullptr != _param->catalog) {
-        db_params.__set_catalog(*(_param->catalog));
+    if (nullptr != _param->common_param->catalog) {
+        db_params.__set_catalog(*(_param->common_param->catalog));
     }
-    if (nullptr != _param->current_user_ident) {
-        db_params.__set_current_user_ident(*(_param->current_user_ident));
+    if (nullptr != _param->common_param->current_user_ident) {
+        db_params.__set_current_user_ident(*(_param->common_param->current_user_ident));
     } else {
-        if (nullptr != _param->user) {
-            db_params.__set_user(*(_param->user));
+        if (nullptr != _param->common_param->user) {
+            db_params.__set_user(*(_param->common_param->user));
         }
-        if (nullptr != _param->user_ip) {
-            db_params.__set_user_ip(*(_param->user_ip));
+        if (nullptr != _param->common_param->user_ip) {
+            db_params.__set_user_ip(*(_param->common_param->user_ip));
         }
     }
     db_params.__set_get_null_catalog(true);
-    if (nullptr != _param->ip && 0 != _param->port) {
-        RETURN_IF_ERROR(
-                SchemaHelper::get_db_names(*(_param->ip), _param->port, db_params, &_db_result));
+    if (nullptr != _param->common_param->ip && 0 != _param->common_param->port) {
+        RETURN_IF_ERROR(SchemaHelper::get_db_names(
+                *(_param->common_param->ip), _param->common_param->port, db_params, &_db_result));
     } else {
         return Status::InternalError("IP or port doesn't exists");
     }
@@ -102,22 +102,23 @@ Status SchemaMetadataNameIdsScanner::_get_new_table() {
         table_params.__set_catalog(_db_result.catalogs[_db_index]);
     }
     _db_index++;
-    if (nullptr != _param->wild) {
-        table_params.__set_pattern(*(_param->wild));
+    if (nullptr != _param->common_param->wild) {
+        table_params.__set_pattern(*(_param->common_param->wild));
     }
-    if (nullptr != _param->current_user_ident) {
-        table_params.__set_current_user_ident(*(_param->current_user_ident));
+    if (nullptr != _param->common_param->current_user_ident) {
+        table_params.__set_current_user_ident(*(_param->common_param->current_user_ident));
     } else {
-        if (nullptr != _param->user) {
-            table_params.__set_user(*(_param->user));
+        if (nullptr != _param->common_param->user) {
+            table_params.__set_user(*(_param->common_param->user));
         }
-        if (nullptr != _param->user_ip) {
-            table_params.__set_user_ip(*(_param->user_ip));
+        if (nullptr != _param->common_param->user_ip) {
+            table_params.__set_user_ip(*(_param->common_param->user_ip));
         }
     }
 
-    if (nullptr != _param->ip && 0 != _param->port) {
-        RETURN_IF_ERROR(SchemaHelper::list_table_metadata_name_ids(*(_param->ip), _param->port,
+    if (nullptr != _param->common_param->ip && 0 != _param->common_param->port) {
+        RETURN_IF_ERROR(SchemaHelper::list_table_metadata_name_ids(*(_param->common_param->ip),
+                                                                   _param->common_param->port,
                                                                    table_params, &_table_result));
     } else {
         return Status::InternalError("IP or port doesn't exists");
@@ -137,16 +138,16 @@ Status SchemaMetadataNameIdsScanner::_fill_block_impl(vectorized::Block* block) 
 
     // catalog_id
     {
-        int64_t srcs[table_num];
+        std::vector<int64_t> srcs(table_num);
         if (_db_result.__isset.catalog_ids) {
             int64_t id = _db_result.catalog_ids[_db_index - 1];
             for (int i = 0; i < table_num; ++i) {
                 srcs[i] = id;
-                datas[i] = srcs + i;
+                datas[i] = srcs.data() + i;
             }
-            fill_dest_column_for_range(block, 0, datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 0, datas));
         } else {
-            fill_dest_column_for_range(block, 0, null_datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 0, null_datas));
         }
     }
 
@@ -158,24 +159,24 @@ Status SchemaMetadataNameIdsScanner::_fill_block_impl(vectorized::Block* block) 
             for (int i = 0; i < table_num; ++i) {
                 datas[i] = &str_slot;
             }
-            fill_dest_column_for_range(block, 1, datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 1, datas));
         } else {
-            fill_dest_column_for_range(block, 1, null_datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 1, null_datas));
         }
     }
 
     // database_id
     {
-        int64_t srcs[table_num];
+        std::vector<int64_t> srcs(table_num);
         if (_db_result.__isset.db_ids) {
             int64_t id = _db_result.db_ids[_db_index - 1];
             for (int i = 0; i < table_num; ++i) {
                 srcs[i] = id;
-                datas[i] = srcs + i;
+                datas[i] = srcs.data() + i;
             }
-            fill_dest_column_for_range(block, 2, datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 2, datas));
         } else {
-            fill_dest_column_for_range(block, 2, null_datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 2, null_datas));
         }
     }
 
@@ -187,44 +188,44 @@ Status SchemaMetadataNameIdsScanner::_fill_block_impl(vectorized::Block* block) 
             for (int i = 0; i < table_num; ++i) {
                 datas[i] = &str_slot;
             }
-            fill_dest_column_for_range(block, 3, datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 3, datas));
         } else {
-            fill_dest_column_for_range(block, 3, null_datas);
+            RETURN_IF_ERROR(fill_dest_column_for_range(block, 3, null_datas));
         }
     }
-    //     table_id
+    //  table_id
     {
-        int64_t srcs[table_num];
+        std::vector<int64_t> srcs(table_num);
         for (int i = 0; i < table_num; ++i) {
             if (_table_result.tables[i].__isset.id) {
                 srcs[i] = _table_result.tables[i].id;
-                datas[i] = &srcs;
+                datas[i] = srcs.data() + i;
             } else {
                 datas[i] = nullptr;
             }
         }
-        fill_dest_column_for_range(block, 4, datas);
+        RETURN_IF_ERROR(fill_dest_column_for_range(block, 4, datas));
     }
 
     //table_name
     {
-        StringRef strs[table_num];
+        std::vector<StringRef> strs(table_num);
         for (int i = 0; i < table_num; ++i) {
             if (_table_result.tables[i].__isset.name) {
                 const std::string* src = &_table_result.tables[i].name;
                 strs[i] = StringRef(src->c_str(), src->size());
-                datas[i] = strs + i;
+                datas[i] = strs.data() + i;
             } else {
                 datas[i] = nullptr;
             }
         }
-        fill_dest_column_for_range(block, 5, datas);
+        RETURN_IF_ERROR(fill_dest_column_for_range(block, 5, datas));
     }
 
     return Status::OK();
 }
 
-Status SchemaMetadataNameIdsScanner::get_next_block(vectorized::Block* block, bool* eos) {
+Status SchemaMetadataNameIdsScanner::get_next_block_internal(vectorized::Block* block, bool* eos) {
     if (!_is_init) {
         return Status::InternalError("Used before initialized.");
     }

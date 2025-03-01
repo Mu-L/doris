@@ -17,6 +17,7 @@
 
 #include "util/debug_util.h"
 
+#include <bvar/bvar.h>
 #include <gen_cpp/HeartbeatService_types.h>
 #include <gen_cpp/PlanNodes_types.h>
 #include <stdint.h>
@@ -27,6 +28,7 @@
 #include <utility>
 
 #include "common/version_internal.h"
+#include "fmt/core.h"
 #include "util/uid_util.h"
 
 namespace doris {
@@ -103,6 +105,16 @@ std::string hexdump(const char* buf, int len) {
     return ss.str();
 }
 
+bvar::Status<uint64_t> be_version_metrics("doris_be_version", [] {
+    std::stringstream ss;
+    ss << version::doris_build_version_major() << 0 << version::doris_build_version_minor() << 0
+       << version::doris_build_version_patch();
+    if (version::doris_build_version_hotfix() > 0) {
+        ss << 0 << version::doris_build_version_hotfix();
+    }
+    return std::strtoul(ss.str().c_str(), nullptr, 10);
+}());
+
 std::string PrintThriftNetworkAddress(const TNetworkAddress& add) {
     std::stringstream ss;
     add.printTo(ss);
@@ -124,14 +136,11 @@ std::string PrintFrontendInfos(const std::vector<TFrontendInfo>& fe_infos) {
 std::string PrintFrontendInfo(const TFrontendInfo& fe_info) {
     std::stringstream ss;
     fe_info.printTo(ss);
-
     return ss.str();
 }
 
-std::string PrintInstanceStandardInfo(const TUniqueId& qid, const int fid, const TUniqueId& iid) {
-    std::stringstream ss;
-    ss << print_id(iid) << '|' << fid << '|' << print_id(qid);
-    return ss.str();
+std::string PrintInstanceStandardInfo(const TUniqueId& qid, const TUniqueId& iid) {
+    return fmt::format("{}|{}", print_id(qid), print_id(iid));
 }
 
 } // namespace doris

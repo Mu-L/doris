@@ -18,22 +18,19 @@
 package org.apache.doris.scheduler.disruptor;
 
 import org.apache.doris.common.Config;
+import org.apache.doris.common.CustomThreadFactory;
 import org.apache.doris.scheduler.constants.TaskType;
-import org.apache.doris.scheduler.manager.TimerJobManager;
-import org.apache.doris.scheduler.manager.TransientTaskManager;
+import org.apache.doris.scheduler.exception.JobException;
 
-import com.lmax.disruptor.BlockingWaitStrategy;
-import com.lmax.disruptor.EventTranslatorOneArg;
-import com.lmax.disruptor.EventTranslatorTwoArg;
+import com.lmax.disruptor.EventTranslatorThreeArg;
+import com.lmax.disruptor.LiteTimeoutBlockingWaitStrategy;
 import com.lmax.disruptor.TimeoutException;
 import com.lmax.disruptor.WorkHandler;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
-import com.lmax.disruptor.util.DaemonThreadFactory;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.log4j.Log4j2;
 
 import java.io.Closeable;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -45,13 +42,13 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The work handler also handles system events by scheduling batch scheduler tasks.
  */
-@Slf4j
+@Log4j2
 public class TaskDisruptor implements Closeable {
 
-    private final Disruptor<TaskEvent> disruptor;
+    private Disruptor<TaskEvent> disruptor;
     private static final int DEFAULT_RING_BUFFER_SIZE = Config.async_task_queen_size;
 
-    private static int consumerThreadCount = Config.async_task_consumer_thread_num;
+    private static final int consumerThreadCount = Config.async_task_consumer_thread_num;
 
     /**
      * The default timeout for {@link #close()} in seconds.
@@ -65,22 +62,23 @@ public class TaskDisruptor implements Closeable {
     private boolean isClosed = false;
 
     /**
-     * The default {@link EventTranslatorOneArg} to use for {@link #tryPublish(Long)}.
+     * The default {@link EventTranslatorThreeArg} to use for {@link #tryPublish(Long, Long)}.
      * This is used to avoid creating a new object for each publish.
      */
-    private static final EventTranslatorTwoArg<TaskEvent, Long, TaskType> TRANSLATOR
-            = (event, sequence, jobId, taskType) -> {
+    private static final EventTranslatorThreeArg<TaskEvent, Long, Long, TaskType> TRANSLATOR
+            = (event, sequence, jobId, taskId, taskType) -> {
                 event.setId(jobId);
+                event.setTaskId(taskId);
                 event.setTaskType(taskType);
             };
 
-    public TaskDisruptor(TimerJobManager timerJobManager, TransientTaskManager transientTaskManager) {
-        ThreadFactory producerThreadFactory = DaemonThreadFactory.INSTANCE;
-        disruptor = new Disruptor<>(TaskEvent.FACTORY, DEFAULT_RING_BUFFER_SIZE, producerThreadFactory,
-                ProducerType.SINGLE, new BlockingWaitStrategy());
+    public void start() {
+        CustomThreadFactory exportTaskThreadFactory = new CustomThreadFactory("export-task-consumer");
+        disruptor = new Disruptor<>(TaskEvent.FACTORY, DEFAULT_RING_BUFFER_SIZE, exportTaskThreadFactory,
+                ProducerType.SINGLE, new LiteTimeoutBlockingWaitStrategy(10, TimeUnit.MILLISECONDS));
         WorkHandler<TaskEvent>[] workers = new TaskHandler[consumerThreadCount];
         for (int i = 0; i < consumerThreadCount; i++) {
-            workers[i] = new TaskHandler(timerJobManager, transientTaskManager);
+            workers[i] = new TaskHandler();
         }
         disruptor.handleEventsWithWorkerPool(workers);
         disruptor.start();
@@ -88,35 +86,51 @@ public class TaskDisruptor implements Closeable {
 
     /**
      * Publishes a job to the disruptor.
+     * Default task type is {@link TaskType#SCHEDULER_JOB_TASK}
      *
-     * @param jobId  job id
+     * @param jobId job id
      */
-    public void tryPublish(Long jobId) {
+    public void tryPublish(Long jobId, Long taskId) {
+        this.tryPublish(jobId, taskId, TaskType.SCHEDULER_JOB_TASK);
+    }
+
+
+    /**
+     * Publishes a job task to the disruptor.
+     *
+     * @param jobId    job id, describe which job this task belongs to
+     * @param taskId   task id, it's linked to job id, we can get job detail by task id
+     * @param taskType {@link TaskType}
+     */
+    public void tryPublish(Long jobId, Long taskId, TaskType taskType) {
         if (isClosed) {
             log.info("tryPublish failed, disruptor is closed, jobId: {}", jobId);
             return;
         }
         try {
-            disruptor.publishEvent(TRANSLATOR, jobId, TaskType.TimerJobTask);
+            disruptor.publishEvent(TRANSLATOR, jobId, taskId, taskType);
         } catch (Exception e) {
-            log.error("tryPublish failed, jobId: {}", jobId, e);
+            log.warn("tryPublish failed, jobId: {}", jobId, e);
         }
     }
 
     /**
      * Publishes a task to the disruptor.
+     * Default task type is {@link TaskType#TRANSIENT_TASK}
      *
-     * @param taskId  task id
+     * @param taskId task id
      */
-    public void tryPublishTask(Long taskId) {
+    public void tryPublishTask(Long taskId) throws JobException {
         if (isClosed) {
             log.info("tryPublish failed, disruptor is closed, taskId: {}", taskId);
             return;
         }
-        try {
-            disruptor.publishEvent(TRANSLATOR, taskId, TaskType.TransientTask);
-        } catch (Exception e) {
-            log.error("tryPublish failed, taskId: {}", taskId, e);
+        // We reserve two slots in the ring buffer
+        // to prevent it from becoming stuck due to competition between producers and consumers.
+        if (disruptor.getRingBuffer().hasAvailableCapacity(2)) {
+            disruptor.publishEvent(TRANSLATOR, taskId, 0L, TaskType.TRANSIENT_TASK);
+        } else {
+            throw new JobException("There is not enough available capacity in the RingBuffer.");
         }
     }
 

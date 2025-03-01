@@ -47,10 +47,14 @@ public class Frontend implements Writable {
     // used for getIpByHostname
     @SerializedName("editLogPort")
     private int editLogPort;
+    @SerializedName("cloudUniqueId")
+    private String cloudUniqueId;
+
     private String version;
 
     private int queryPort;
     private int rpcPort;
+    private int arrowFlightSqlPort;
 
     private long replayedJournalId;
     private long lastStartupTime;
@@ -100,6 +104,10 @@ public class Frontend implements Writable {
         return rpcPort;
     }
 
+    public int getArrowFlightSqlPort() {
+        return arrowFlightSqlPort;
+    }
+
     public boolean isAlive() {
         return isAlive;
     }
@@ -136,6 +144,14 @@ public class Frontend implements Writable {
         return diskInfos;
     }
 
+    public void setCloudUniqueId(String cloudUniqueId) {
+        this.cloudUniqueId = cloudUniqueId;
+    }
+
+    public String getCloudUniqueId() {
+        return cloudUniqueId;
+    }
+
     /**
      * handle Frontend's heartbeat response. Because the replayed journal id is very likely to be
      * changed at each heartbeat response, so we simple return true if the heartbeat status is OK.
@@ -153,13 +169,14 @@ public class Frontend implements Writable {
             version = hbResponse.getVersion();
             queryPort = hbResponse.getQueryPort();
             rpcPort = hbResponse.getRpcPort();
+            arrowFlightSqlPort = hbResponse.getArrowFlightSqlPort();
             replayedJournalId = hbResponse.getReplayedJournalId();
             lastUpdateTime = hbResponse.getHbTime();
             heartbeatErrMsg = "";
             lastStartupTime = hbResponse.getProcessUUID();
             diskInfos = hbResponse.getDiskInfos();
             isChanged = true;
-            processUUID = lastStartupTime;
+            processUUID = hbResponse.getProcessUUID();
         } else {
             // A non-master node disconnected.
             // Set startUUID to zero, and be's heartbeat mgr will ignore this hb,
@@ -219,5 +236,9 @@ public class Frontend implements Writable {
 
     public HostInfo toHostInfo() {
         return new HostInfo(host, editLogPort);
+    }
+
+    public boolean isOldStyleNodeName() {
+        return nodeName.equals(host + "_" + editLogPort);
     }
 }
